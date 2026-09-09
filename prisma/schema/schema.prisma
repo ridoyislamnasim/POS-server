@@ -1,0 +1,26 @@
+// Prisma entry — generator + database only.
+// Models are split by domain in this folder.
+//   enums.prisma      shared enums
+//   tenant.prisma     tenant / business / currency / plans
+//   location.prisma   location, branch, till
+//   identity.prisma   users, roles, sessions
+//   catalog.prisma    products, attributes, barcodes, tax
+//   inventory.prisma  stock + movements
+//   customer.prisma   customers, loyalty, credit
+//   sales.prisma      sales, payments, invoices
+//   shift.prisma      cashier shifts
+//   platform.prisma   outbox, audit, packs
+//   finance.prisma    expenses, income, ledger, daily close
+//   supplier.prisma   suppliers, purchases, POs
+//   staff.prisma      attendance, shift templates
+//   commerce.prisma   sales orders, e-commerce, delivery
+//   settings.prisma   tenant settings, templates, API keys, backups
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}

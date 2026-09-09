@@ -1,0 +1,20 @@
+// One OPEN shift per cashier, bound to one Register.
+
+model Shift {
+  id           String      @id @default(cuid())
+  tenantId     String
+  branchId     String
+  branch       Branch      @relation(fields: [branchId], references: [id])
+  registerId   String
+  register     Register    @relation(fields: [registerId], references: [id])
+  cashierId    String
+  cashier      User        @relation(fields: [cashierId], references: [id])
+  status       ShiftStatus @default(OPEN)
+  openedAt     DateTime    @default(now())
+  closedAt     DateTime?
+  businessDate DateTime    @db.Date
+  openingFloat Decimal     @db.Decimal(19, 4)
+  closingCash  Decimal?    @db.Decimal(19, 4)
+  expectedCash Decimal?    @db.Decimal(19, 4)
+  sales        Sale[]
+}

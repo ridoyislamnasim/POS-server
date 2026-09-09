@@ -1,0 +1,32 @@
+// Staff attendance and reusable shift templates (open/close till is Shift).
+
+model Attendance {
+  id        String           @id @default(cuid())
+  tenantId  String
+  userId    String
+  user      User             @relation(fields: [userId], references: [id])
+  branchId  String
+  branch    Branch           @relation(fields: [branchId], references: [id])
+  status    AttendanceStatus @default(PRESENT)
+  checkIn   DateTime?
+  checkOut  DateTime?
+  notes     String?
+  workDate  DateTime         @db.Date
+  createdAt DateTime         @default(now())
+
+  @@index([tenantId, workDate])
+  @@index([tenantId, userId, workDate])
+}
+
+model ShiftTemplate {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  startTime String
+  endTime   String
+  days      Json
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, name])
+}

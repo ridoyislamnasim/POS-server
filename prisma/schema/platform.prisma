@@ -1,0 +1,80 @@
+// Cross-cutting platform tables. Outbox is written in the sale transaction;
+// workers process events after commit (PDF / fiscal / webhook).
+
+model IdempotencyRecord {
+  id        String   @id @default(cuid())
+  tenantId  String
+  key       String
+  method    String
+  path      String
+  status    Int
+  body      Json
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, key])
+}
+
+model OutboxEvent {
+  id            String    @id @default(cuid())
+  tenantId      String
+  type          String
+  eventType     String    @default("")
+  aggregateId   String?
+  payload       Json
+  correlationId String
+  processedAt   DateTime?
+  createdAt     DateTime  @default(now())
+}
+
+model AuditLog {
+  id                 String   @id @default(cuid())
+  tenantId           String?
+  userId             String?
+  actorUserId        String?
+  impersonatedUserId String?
+  action             String
+  entityType         String
+  entityId           String?
+  before             Json?
+  after              Json?
+  ip                 String?
+  userAgent          String?
+  requestId          String?
+  correlationId      String?
+  createdAt          DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, createdAt, id])
+}
+
+model FiscalDocument {
+  id        String   @id @default(cuid())
+  tenantId  String
+  saleId    String
+  status    String   @default("PENDING")
+  payload   Json
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, saleId])
+}
+
+model AccountingEvent {
+  id        String   @id @default(cuid())
+  tenantId  String
+  saleId    String
+  type      String
+  payload   Json
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, saleId])
+}
+
+model PackMigration {
+  id          String   @id @default(cuid())
+  tenantId    String
+  pack        String
+  fromVersion String
+  toVersion   String
+  checksum    String
+  executedAt  DateTime @default(now())
+}

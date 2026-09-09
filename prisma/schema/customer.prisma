@@ -1,0 +1,44 @@
+// Customer master. type = INDIVIDUAL | BUSINESS. Phone stored canonical (+880…).
+
+model Customer {
+  id             String      @id @default(cuid())
+  tenantId       String
+  tenant         Tenant      @relation(fields: [tenantId], references: [id])
+  type           String      @default("INDIVIDUAL")
+  name           String
+  phone          String
+  phoneCanonical String
+  email          String?
+  address        String?
+  notes          String?
+  taxId          String?
+  creditLimit    Decimal     @default(0) @db.Decimal(19, 4)
+  creditDue      Decimal     @default(0) @db.Decimal(19, 4)
+  loyaltyPoints  Int         @default(0)
+  birthday       DateTime?   @db.Date
+  status         PartyStatus @default(ACTIVE)
+  sales          Sale[]
+  loyalty        LoyaltyTransaction[]
+  salesOrders    SalesOrder[]
+  ecommerceOrders EcommerceOrder[]
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@unique([tenantId, phoneCanonical])
+  @@index([tenantId, createdAt, id])
+  @@index([tenantId, name])
+}
+
+model LoyaltyTransaction {
+  id         String      @id @default(cuid())
+  tenantId   String
+  customerId String
+  customer   Customer    @relation(fields: [customerId], references: [id])
+  type       LoyaltyType
+  points     Int
+  saleId     String?
+  notes      String?
+  createdAt  DateTime    @default(now())
+
+  @@index([tenantId, customerId, createdAt])
+}

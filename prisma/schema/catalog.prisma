@@ -1,0 +1,106 @@
+// Universal product engine. Fashion colour/size are AttributeOptions, not Style tables.
+// variantKey must be unique per product (e.g. colour:red|size:l).
+
+model AttributeDefinition {
+  id              String            @id @default(cuid())
+  tenantId        String
+  key             String
+  name            String
+  dataType        AttributeDataType
+  scope           AttributeScope    @default(PACK)
+  required        Boolean           @default(false)
+  searchable      Boolean           @default(true)
+  filterable      Boolean           @default(true)
+  variantDefining Boolean           @default(false)
+  sortOrder       Int               @default(0)
+  options         AttributeOption[]
+
+  @@unique([tenantId, key])
+}
+
+model AttributeOption {
+  id            String                  @id @default(cuid())
+  definitionId  String
+  definition    AttributeDefinition     @relation(fields: [definitionId], references: [id])
+  value         String
+  label         String
+  sortOrder     Int                     @default(0)
+  variantValues VariantAttributeValue[]
+
+  @@unique([definitionId, value])
+}
+
+model Product {
+  id            String           @id @default(cuid())
+  tenantId      String
+  tenant        Tenant           @relation(fields: [tenantId], references: [id])
+  type          ProductType      @default(PHYSICAL)
+  status        ProductStatus    @default(ACTIVE)
+  name          String
+  code          String
+  category      String?
+  taxCategoryId String?
+  taxCategory   TaxCategory?     @relation(fields: [taxCategoryId], references: [id])
+  variants      ProductVariant[]
+  createdAt     DateTime         @default(now())
+
+  @@unique([tenantId, code])
+  @@index([tenantId, name])
+}
+
+model ProductVariant {
+  id           String                  @id @default(cuid())
+  tenantId     String
+  productId    String
+  product      Product                 @relation(fields: [productId], references: [id])
+  sku          String
+  variantKey   String
+  status       ProductStatus           @default(ACTIVE)
+  trackingType TrackingType            @default(NONE)
+  price        Decimal                 @db.Decimal(19, 4)
+  cost         Decimal                 @default(0) @db.Decimal(19, 4)
+  attributes   VariantAttributeValue[]
+  barcodes           Barcode[]
+  stock              Stock[]
+  purchaseItems      PurchaseItem[]
+  purchaseOrderItems PurchaseOrderItem[]
+  salesOrderItems    SalesOrderItem[]
+
+  @@unique([productId, variantKey])
+  @@unique([tenantId, sku])
+}
+
+model VariantAttributeValue {
+  variantId String
+  optionId  String
+  variant   ProductVariant  @relation(fields: [variantId], references: [id])
+  option    AttributeOption @relation(fields: [optionId], references: [id])
+
+  @@id([variantId, optionId])
+}
+
+model Barcode {
+  id        String         @id @default(cuid())
+  tenantId  String
+  variantId String
+  variant   ProductVariant @relation(fields: [variantId], references: [id])
+  code      String
+  kind      String         @default("CODE128")
+  primary   Boolean        @default(false)
+  active    Boolean        @default(true)
+  validFrom DateTime?
+  validTo   DateTime?
+
+  @@index([tenantId, code])
+}
+
+// Active barcode uniqueness is a partial unique index (tenantId, code) WHERE active = true.
+// Applied in src/lib/ensure-indexes.ts — Prisma cannot express partial unique indexes.
+
+model TaxCategory {
+  id       String    @id @default(cuid())
+  tenantId String
+  name     String
+  rate     Decimal   @db.Decimal(7, 4)
+  products Product[]
+}

@@ -1,0 +1,60 @@
+// Per-tenant settings, invoice templates, API keys, backup records.
+
+model TenantSettings {
+  id                 String   @id @default(cuid())
+  tenantId           String   @unique
+  tenant             Tenant   @relation(fields: [tenantId], references: [id])
+  currency           String   @default("BDT")
+  taxEnabled         Boolean  @default(true)
+  defaultTaxRate     Decimal  @default(0) @db.Decimal(7, 4)
+  invoiceTemplate    String   @default("STANDARD")
+  receiptPrinter     String?
+  barcodePrinter     String?
+  paymentMethods     Json     @default("[\"CASH\",\"CARD\",\"MFS\"]")
+  notifications      Json     @default("{}")
+  language           String   @default("en")
+  theme              String   @default("system")
+  lowStockThreshold  Int      @default(5)
+  whatsappEnabled    Boolean  @default(false)
+  smsEnabled         Boolean  @default(false)
+  emailEnabled       Boolean  @default(false)
+  invoiceFooter      String?
+  updatedAt          DateTime @updatedAt
+}
+
+model InvoiceTemplate {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  kind      String
+  body      String
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, name, kind])
+}
+
+model ApiKey {
+  id         String    @id @default(cuid())
+  tenantId   String
+  name       String
+  keyPrefix  String
+  keyHash    String
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([tenantId])
+}
+
+model BackupRecord {
+  id          String       @id @default(cuid())
+  tenantId    String
+  status      BackupStatus @default(PENDING)
+  note        String?
+  payloadSize Int          @default(0)
+  createdById String?
+  createdAt   DateTime     @default(now())
+
+  @@index([tenantId, createdAt])
+}

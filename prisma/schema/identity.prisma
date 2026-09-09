@@ -1,0 +1,99 @@
+// Users, RBAC, sessions. Never store branchIds on User — use UserBranch.
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  phone        String?
+  passwordHash String
+  name         String
+  status       UserStatus @default(ACTIVE)
+  locale       String     @default("en")
+  timezone     String     @default("Asia/Dhaka")
+  mfaEnabled   Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+
+  tenants     UserTenant[]
+  roles       UserRole[]
+  branches    UserBranch[]
+  sessions    Session[]
+  shifts      Shift[]
+  attendances Attendance[]
+}
+
+model UserTenant {
+  id          String @id @default(cuid())
+  userId      String
+  user        User   @relation(fields: [userId], references: [id])
+  tenantId    String
+  tenant      Tenant @relation(fields: [tenantId], references: [id])
+  allBranches Boolean @default(false)
+  isPlatform  Boolean @default(false)
+
+  @@unique([userId, tenantId])
+}
+
+model Role {
+  id          String           @id @default(cuid())
+  tenantId    String?
+  key         String
+  name        String
+  permissions RolePermission[]
+  users       UserRole[]
+
+  @@unique([tenantId, key])
+}
+
+model Permission {
+  id    String           @id @default(cuid())
+  key   String           @unique
+  roles RolePermission[]
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id])
+  permission   Permission @relation(fields: [permissionId], references: [id])
+
+  @@id([roleId, permissionId])
+}
+
+model UserRole {
+  userId String
+  roleId String
+  user   User @relation(fields: [userId], references: [id])
+  role   Role @relation(fields: [roleId], references: [id])
+
+  @@id([userId, roleId])
+}
+
+model UserBranch {
+  userId   String
+  branchId String
+  user     User   @relation(fields: [userId], references: [id])
+  branch   Branch @relation(fields: [branchId], references: [id])
+
+  @@id([userId, branchId])
+}
+
+model Session {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id])
+  refreshTokenHash String
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  userAgent        String?
+  ip               String?
+  createdAt        DateTime  @default(now())
+}
+
+model LoginAttempt {
+  id        String   @id @default(cuid())
+  email     String
+  success   Boolean
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([email, createdAt])
+}

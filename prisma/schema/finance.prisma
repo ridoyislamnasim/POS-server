@@ -1,0 +1,95 @@
+// Expenses, other income, polymorphic ledger payments, daily till close.
+
+model ExpenseCategory {
+  id        String    @id @default(cuid())
+  tenantId  String
+  name      String
+  parentId  String?
+  parent    ExpenseCategory?  @relation("ExpenseCatTree", fields: [parentId], references: [id])
+  children  ExpenseCategory[] @relation("ExpenseCatTree")
+  expenses  Expense[]
+  createdAt DateTime  @default(now())
+
+  @@unique([tenantId, name])
+}
+
+model Expense {
+  id          String        @id @default(cuid())
+  tenantId    String
+  branchId    String?
+  branch      Branch?       @relation(fields: [branchId], references: [id])
+  categoryId  String
+  category    ExpenseCategory @relation(fields: [categoryId], references: [id])
+  status      ExpenseStatus @default(POSTED)
+  amount      Decimal       @db.Decimal(19, 4)
+  tax         Decimal       @default(0) @db.Decimal(19, 4)
+  method      String        @default("CASH")
+  vendor      String?
+  notes       String?
+  businessDate DateTime     @db.Date
+  createdById String?
+  createdAt   DateTime      @default(now())
+
+  @@index([tenantId, businessDate])
+  @@index([tenantId, branchId, createdAt])
+}
+
+model Income {
+  id           String   @id @default(cuid())
+  tenantId     String
+  branchId     String?
+  branch       Branch?  @relation(fields: [branchId], references: [id])
+  category     String
+  amount       Decimal  @db.Decimal(19, 4)
+  method       String   @default("CASH")
+  notes        String?
+  businessDate DateTime @db.Date
+  createdById  String?
+  createdAt    DateTime @default(now())
+
+  @@index([tenantId, businessDate])
+}
+
+model LedgerPayment {
+  id           String          @id @default(cuid())
+  tenantId     String
+  branchId     String?
+  partyType    PartyType
+  partyId      String
+  direction    LedgerDirection
+  amount       Decimal         @db.Decimal(19, 4)
+  method       String          @default("CASH")
+  reference    String?
+  notes        String?
+  saleId       String?
+  purchaseId   String?
+  expenseId    String?
+  businessDate DateTime        @db.Date
+  createdById  String?
+  createdAt    DateTime        @default(now())
+
+  @@index([tenantId, partyType, partyId])
+  @@index([tenantId, businessDate])
+}
+
+model DailyClosing {
+  id           String   @id @default(cuid())
+  tenantId     String
+  branchId     String
+  branch       Branch   @relation(fields: [branchId], references: [id])
+  businessDate DateTime @db.Date
+  openingCash  Decimal  @db.Decimal(19, 4)
+  salesCash    Decimal  @default(0) @db.Decimal(19, 4)
+  expenseCash  Decimal  @default(0) @db.Decimal(19, 4)
+  incomeCash   Decimal  @default(0) @db.Decimal(19, 4)
+  paymentsIn   Decimal  @default(0) @db.Decimal(19, 4)
+  paymentsOut  Decimal  @default(0) @db.Decimal(19, 4)
+  expectedCash Decimal  @db.Decimal(19, 4)
+  countedCash  Decimal  @db.Decimal(19, 4)
+  variance     Decimal  @db.Decimal(19, 4)
+  notes        String?
+  closedById   String
+  createdAt    DateTime @default(now())
+
+  @@unique([tenantId, branchId, businessDate])
+}

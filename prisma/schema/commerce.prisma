@@ -1,0 +1,88 @@
+// Sales orders, marketplace/e-commerce tickets, last-mile delivery.
+
+model SalesOrder {
+  id          String           @id @default(cuid())
+  tenantId    String
+  branchId    String
+  branch      Branch           @relation(fields: [branchId], references: [id])
+  customerId  String?
+  customer    Customer?        @relation(fields: [customerId], references: [id])
+  status      OrderStatus      @default(DRAFT)
+  number      String
+  notes       String?
+  subtotal    Decimal          @db.Decimal(19, 4)
+  tax         Decimal          @default(0) @db.Decimal(19, 4)
+  total       Decimal          @db.Decimal(19, 4)
+  saleId      String?
+  items       SalesOrderItem[]
+  deliveries  Delivery[]
+  createdById String?
+  createdAt   DateTime         @default(now())
+
+  @@unique([tenantId, number])
+  @@index([tenantId, branchId, createdAt])
+}
+
+model SalesOrderItem {
+  id           String         @id @default(cuid())
+  salesOrderId String
+  salesOrder   SalesOrder     @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  variantId    String
+  variant      ProductVariant @relation(fields: [variantId], references: [id])
+  qty          Decimal        @db.Decimal(19, 4)
+  unitPrice    Decimal        @db.Decimal(19, 4)
+  lineTotal    Decimal        @db.Decimal(19, 4)
+  nameSnapshot String
+  skuSnapshot  String
+}
+
+model EcommerceOrder {
+  id          String    @id @default(cuid())
+  tenantId    String
+  channel     String
+  externalId  String
+  customerId  String?
+  customer    Customer? @relation(fields: [customerId], references: [id])
+  status      OrderStatus @default(CONFIRMED)
+  payload     Json
+  total       Decimal   @db.Decimal(19, 4)
+  saleId      String?
+  createdAt   DateTime  @default(now())
+
+  @@unique([tenantId, channel, externalId])
+}
+
+model Delivery {
+  id            String         @id @default(cuid())
+  tenantId      String
+  branchId      String
+  branch        Branch         @relation(fields: [branchId], references: [id])
+  salesOrderId  String?
+  salesOrder    SalesOrder?    @relation(fields: [salesOrderId], references: [id])
+  saleId        String?
+  status        DeliveryStatus @default(PENDING)
+  courier       String?
+  tracking      String?
+  address       String
+  phone         String?
+  scheduledAt   DateTime?
+  deliveredAt   DateTime?
+  notes         String?
+  createdAt     DateTime       @default(now())
+
+  @@index([tenantId, status, createdAt])
+}
+
+model NotificationLog {
+  id        String              @id @default(cuid())
+  tenantId  String
+  channel   NotificationChannel
+  to        String
+  template  String
+  status    NotificationStatus  @default(QUEUED)
+  payload   Json
+  error     String?
+  createdAt DateTime            @default(now())
+
+  @@index([tenantId, createdAt])
+}

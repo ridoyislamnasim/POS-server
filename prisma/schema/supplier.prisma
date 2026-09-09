@@ -1,0 +1,128 @@
+// Supplier master, purchase orders, goods received.
+
+model Supplier {
+  id             String      @id @default(cuid())
+  tenantId       String
+  tenant         Tenant      @relation(fields: [tenantId], references: [id])
+  name           String
+  phone          String?
+  email          String?
+  address        String?
+  taxId          String?
+  notes          String?
+  creditDue      Decimal     @default(0) @db.Decimal(19, 4)
+  status         PartyStatus @default(ACTIVE)
+  purchases      Purchase[]
+  purchaseOrders PurchaseOrder[]
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@index([tenantId, name])
+}
+
+model PurchaseOrder {
+  id           String         @id @default(cuid())
+  tenantId     String
+  branchId     String
+  branch       Branch         @relation(fields: [branchId], references: [id])
+  supplierId   String
+  supplier     Supplier       @relation(fields: [supplierId], references: [id])
+  status       PurchaseStatus @default(DRAFT)
+  number       String
+  notes        String?
+  expectedAt   DateTime?
+  subtotal     Decimal        @db.Decimal(19, 4)
+  tax          Decimal        @default(0) @db.Decimal(19, 4)
+  total        Decimal        @db.Decimal(19, 4)
+  items        PurchaseOrderItem[]
+  purchases    Purchase[]
+  createdById  String?
+  createdAt    DateTime       @default(now())
+
+  @@unique([tenantId, number])
+  @@index([tenantId, branchId, createdAt])
+}
+
+model PurchaseOrderItem {
+  id              String          @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder   @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  variantId       String
+  variant         ProductVariant  @relation(fields: [variantId], references: [id])
+  qty             Decimal         @db.Decimal(19, 4)
+  receivedQty     Decimal         @default(0) @db.Decimal(19, 4)
+  unitCost        Decimal         @db.Decimal(19, 4)
+  taxRate         Decimal         @default(0) @db.Decimal(7, 4)
+  lineTotal       Decimal         @db.Decimal(19, 4)
+}
+
+model Purchase {
+  id              String         @id @default(cuid())
+  tenantId        String
+  branchId        String
+  branch          Branch         @relation(fields: [branchId], references: [id])
+  locationId      String
+  supplierId      String
+  supplier        Supplier       @relation(fields: [supplierId], references: [id])
+  purchaseOrderId String?
+  purchaseOrder   PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
+  status          PurchaseStatus @default(RECEIVED)
+  invoiceNumber   String
+  businessDate    DateTime       @db.Date
+  subtotal        Decimal        @db.Decimal(19, 4)
+  tax             Decimal        @default(0) @db.Decimal(19, 4)
+  total           Decimal        @db.Decimal(19, 4)
+  paid            Decimal        @default(0) @db.Decimal(19, 4)
+  due             Decimal        @default(0) @db.Decimal(19, 4)
+  notes           String?
+  items           PurchaseItem[]
+  returns         PurchaseReturn[]
+  createdById     String?
+  createdAt       DateTime       @default(now())
+
+  @@unique([tenantId, invoiceNumber])
+  @@index([tenantId, branchId, createdAt])
+}
+
+model PurchaseItem {
+  id          String         @id @default(cuid())
+  purchaseId  String
+  purchase    Purchase       @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  variantId   String
+  variant     ProductVariant @relation(fields: [variantId], references: [id])
+  qty         Decimal        @db.Decimal(19, 4)
+  unitCost    Decimal        @db.Decimal(19, 4)
+  taxRate     Decimal        @default(0) @db.Decimal(7, 4)
+  taxAmount   Decimal        @default(0) @db.Decimal(19, 4)
+  lineTotal   Decimal        @db.Decimal(19, 4)
+}
+
+model PurchaseReturn {
+  id          String               @id @default(cuid())
+  tenantId    String
+  branchId    String
+  branch      Branch               @relation(fields: [branchId], references: [id])
+  purchaseId  String
+  purchase    Purchase             @relation(fields: [purchaseId], references: [id])
+  number      String
+  reason      String
+  notes       String?
+  total       Decimal              @db.Decimal(19, 4)
+  createdById String
+  createdAt   DateTime             @default(now())
+  items       PurchaseReturnItem[]
+
+  @@unique([tenantId, number])
+  @@index([tenantId, purchaseId])
+}
+
+model PurchaseReturnItem {
+  id               String         @id @default(cuid())
+  purchaseReturnId String
+  purchaseReturn   PurchaseReturn @relation(fields: [purchaseReturnId], references: [id], onDelete: Cascade)
+  purchaseItemId   String
+  variantId        String
+  qty              Decimal        @db.Decimal(19, 4)
+  unitCost         Decimal        @db.Decimal(19, 4)
+  lineTotal        Decimal        @db.Decimal(19, 4)
+}

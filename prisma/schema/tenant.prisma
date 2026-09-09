@@ -1,0 +1,66 @@
+// Tenant + legal business profile. One tenant = one SaaS customer (e.g. Nokshi).
+
+model Tenant {
+  id                  String             @id @default(cuid())
+  name                String
+  industryPack        String             @default("FASHION")
+  industryPackVersion String             @default("1.0.0")
+  country             String             @default("BD")
+  timezone            String             @default("Asia/Dhaka")
+  locale              String             @default("en")
+  dataRegion          String             @default("AP_SOUTH")
+  planId              String?
+  subscriptionStatus  SubscriptionStatus @default(TRIAL)
+  trialStart          DateTime?
+  trialEnd            DateTime?
+  catalogVersion      Int                @default(1)
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  plan       Plan?           @relation(fields: [planId], references: [id])
+  businesses Business[]
+  locations  Location[]
+  branches   Branch[]
+  users      UserTenant[]
+  products   Product[]
+  sales      Sale[]
+  customers  Customer[]
+  suppliers  Supplier[]
+  settings   TenantSettings?
+}
+
+model Currency {
+  code       String  @id
+  name       String
+  minorUnits Int     @default(2)
+  active     Boolean @default(true)
+}
+
+model Plan {
+  id        String       @id @default(cuid())
+  code      String       @unique
+  name      String
+  interval  PlanInterval @default(MONTHLY)
+  price     Decimal      @default(0) @db.Decimal(19, 4)
+  currency  String       @default("BDT")
+  features  Json
+  limits    Json
+  active    Boolean      @default(true)
+  tenants   Tenant[]
+  createdAt DateTime     @default(now())
+}
+
+model Business {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  name      String
+  legalName String?
+  vatId     String?
+  address   String?
+  phone     String?
+  email     String?
+  logoUrl   String?
+  currency  String   @default("BDT")
+  createdAt DateTime @default(now())
+}

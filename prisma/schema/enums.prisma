@@ -1,0 +1,225 @@
+// Shared enums — used across domain files.
+
+enum LocationType {
+  STORE
+  WAREHOUSE
+  KIOSK
+  DARK_STORE
+  TRANSIT
+  OTHER
+}
+
+enum ChannelType {
+  STORE
+  ONLINE
+  MARKETPLACE
+  WAREHOUSE
+}
+
+enum ProductType {
+  PHYSICAL
+  SERVICE
+  DIGITAL
+  SUBSCRIPTION
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+  DISCONTINUED
+}
+
+enum AttributeDataType {
+  TEXT
+  NUMBER
+  BOOLEAN
+  DATE
+  SELECT
+  MULTI_SELECT
+  MONEY
+}
+
+enum AttributeScope {
+  SYSTEM
+  TENANT
+  PACK
+  PRODUCT
+  VARIANT
+}
+
+enum TrackingType {
+  NONE
+  SERIAL
+  BATCH
+  LOT
+  EXPIRY
+}
+
+enum SaleStatus {
+  DRAFT
+  COMPLETED
+  VOIDED
+  PARTIALLY_RETURNED
+  FULLY_RETURNED
+}
+
+enum PaymentStatus {
+  PENDING
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  CANCELLED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum StockMovementType {
+  OPENING
+  SALE
+  SALE_RETURN
+  PURCHASE
+  PURCHASE_RETURN
+  TRANSFER_OUT
+  TRANSFER_IN
+  ADJUSTMENT
+  DAMAGE
+  SHRINKAGE
+}
+
+enum ReturnKind {
+  RETURN
+  EXCHANGE
+}
+
+enum ReturnStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  COMPLETED
+}
+
+enum StockTakeStatus {
+  DRAFT
+  POSTED
+  CANCELLED
+}
+
+enum DocumentKind {
+  BILL
+  INVOICE
+}
+
+enum ShiftStatus {
+  OPEN
+  CLOSED
+}
+
+enum UserStatus {
+  ACTIVE
+  DEACTIVATED
+}
+
+enum NegativeStockPolicy {
+  BLOCK
+  ALLOW
+  ALLOW_WITH_APPROVAL
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  GRACE_PERIOD
+  SUSPENDED
+  CANCELLED
+  EXPIRED
+}
+
+enum PurchaseStatus {
+  DRAFT
+  ORDERED
+  PARTIAL
+  RECEIVED
+  CANCELLED
+}
+
+enum ExpenseStatus {
+  DRAFT
+  POSTED
+  VOIDED
+}
+
+enum PartyType {
+  CUSTOMER
+  SUPPLIER
+  OTHER
+}
+
+enum LedgerDirection {
+  IN
+  OUT
+}
+
+enum LoyaltyType {
+  EARN
+  REDEEM
+  ADJUST
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  LEAVE
+  HALF_DAY
+}
+
+enum OrderStatus {
+  DRAFT
+  CONFIRMED
+  PACKED
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  CONVERTED
+}
+
+enum DeliveryStatus {
+  PENDING
+  ASSIGNED
+  IN_TRANSIT
+  DELIVERED
+  FAILED
+  RETURNED
+}
+
+enum NotificationChannel {
+  EMAIL
+  SMS
+  WHATSAPP
+  IN_APP
+}
+
+enum NotificationStatus {
+  QUEUED
+  SENT
+  FAILED
+}
+
+enum BackupStatus {
+  PENDING
+  COMPLETE
+  FAILED
+}
+
+enum PlanInterval {
+  MONTHLY
+  YEARLY
+}
+
+enum PartyStatus {
+  ACTIVE
+  INACTIVE
+}

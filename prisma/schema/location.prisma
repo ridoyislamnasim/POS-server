@@ -1,0 +1,81 @@
+// Location = where stock physically exists.
+// Branch = operational outlet (POS, Register, Till, Shift, UserBranch).
+// Channel = where a sale/order originated (Sale.channel). Not a second inventory DB.
+
+model Location {
+  id       String       @id @default(cuid())
+  tenantId String
+  tenant   Tenant       @relation(fields: [tenantId], references: [id])
+  parentId String?
+  parent   Location?    @relation("LocationTree", fields: [parentId], references: [id])
+  children Location[]   @relation("LocationTree")
+  type     LocationType
+  name     String
+
+  branches Branch[]
+  stock    Stock[]
+  channels StockLocationChannel[]
+}
+
+model Branch {
+  id                  String              @id @default(cuid())
+  tenantId            String
+  tenant              Tenant              @relation(fields: [tenantId], references: [id])
+  locationId          String
+  location            Location            @relation(fields: [locationId], references: [id])
+  name                String
+  code                String
+  timezone            String              @default("Asia/Dhaka")
+  operationalStatus   String              @default("OPEN")
+  negativeStockPolicy NegativeStockPolicy @default(BLOCK)
+
+  registers      Register[]
+  userBranches   UserBranch[]
+  sales          Sale[]
+  shifts         Shift[]
+  sequences      DocumentNumberSequence[]
+  expenses       Expense[]
+  incomes        Income[]
+  purchases      Purchase[]
+  purchaseOrders PurchaseOrder[]
+  dailyClosings  DailyClosing[]
+  attendances    Attendance[]
+  salesOrders    SalesOrder[]
+  deliveries     Delivery[]
+  saleReturns    SaleReturn[]
+  purchaseReturns PurchaseReturn[]
+  stockTakes     StockTake[]
+
+  @@unique([tenantId, code])
+}
+
+model StockLocationChannel {
+  id         String      @id @default(cuid())
+  tenantId   String
+  locationId String
+  location   Location    @relation(fields: [locationId], references: [id])
+  channel    ChannelType
+
+  @@unique([locationId, channel])
+}
+
+model Register {
+  id       String       @id @default(cuid())
+  tenantId String
+  branchId String
+  branch   Branch       @relation(fields: [branchId], references: [id])
+  name     String
+  devices  TillDevice[]
+  shifts   Shift[]
+}
+
+model TillDevice {
+  id         String    @id @default(cuid())
+  registerId String
+  register   Register  @relation(fields: [registerId], references: [id])
+  hardwareId String
+  name       String
+  revokedAt  DateTime?
+
+  @@unique([registerId, hardwareId])
+}

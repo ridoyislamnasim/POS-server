@@ -1,0 +1,168 @@
+// Sale never hard-deleted. Item/business snapshots freeze invoice totals.
+// Print/PDF is not part of the DB transaction — see SaleDocument + OutboxEvent.
+
+model Sale {
+  id                      String                @id @default(cuid())
+  tenantId                String
+  tenant                  Tenant                @relation(fields: [tenantId], references: [id])
+  branchId                String
+  branch                  Branch                @relation(fields: [branchId], references: [id])
+  locationId              String
+  registerId              String
+  shiftId                 String?
+  shift                   Shift?                @relation(fields: [shiftId], references: [id])
+  cashierId               String
+  channel                 ChannelType           @default(STORE)
+  customerId              String?
+  customer                Customer?             @relation(fields: [customerId], references: [id])
+  status                  SaleStatus            @default(COMPLETED)
+  invoiceNumber           String
+  businessDate            DateTime              @db.Date
+  calendarDate            DateTime              @default(now())
+  currency                String                @default("BDT")
+  subtotal                Decimal               @db.Decimal(19, 4)
+  discount                Decimal               @db.Decimal(19, 4)
+  tax                     Decimal               @db.Decimal(19, 4)
+  total                   Decimal               @db.Decimal(19, 4)
+  paid                    Decimal               @db.Decimal(19, 4)
+  due                     Decimal               @default(0) @db.Decimal(19, 4)
+  change                  Decimal               @default(0) @db.Decimal(19, 4)
+  clientTransactionId     String
+  deviceId                String
+  deviceSequence          Int                   @default(1)
+  idempotencyKey          String?
+  businessSnapshot        Json
+  customerSnapshot        Json?
+  taxRegistrationSnapshot Json?
+  currencySnapshot        Json
+  items                   SaleItem[]
+  payments                PaymentTransaction[]
+  documents               SaleDocument[]
+  returns                 SaleReturn[]
+  createdAt               DateTime              @default(now())
+
+  @@unique([tenantId, clientTransactionId, deviceId])
+  @@unique([tenantId, invoiceNumber])
+  @@index([tenantId, branchId, createdAt])
+  @@index([tenantId, businessDate, id])
+  @@index([tenantId, createdAt, id])
+}
+
+model SaleItem {
+  id                  String  @id @default(cuid())
+  saleId              String
+  sale                Sale    @relation(fields: [saleId], references: [id])
+  variantId           String
+  qty                 Decimal @db.Decimal(19, 4)
+  unitPrice           Decimal @db.Decimal(19, 4)
+  originalPrice       Decimal @db.Decimal(19, 4)
+  discountAmount      Decimal @default(0) @db.Decimal(19, 4)
+  discountReason      String?
+  taxRate             Decimal @db.Decimal(7, 4)
+  taxAmount           Decimal @db.Decimal(19, 4)
+  lineTotal           Decimal @db.Decimal(19, 4)
+  productNameSnapshot String
+  skuSnapshot         String
+  variantSnapshot     String
+  associateId         String?
+}
+
+model PaymentTransaction {
+  id                    String        @id @default(cuid())
+  saleId                String
+  sale                  Sale          @relation(fields: [saleId], references: [id])
+  saleReturnId          String?
+  saleReturn            SaleReturn?   @relation(fields: [saleReturnId], references: [id])
+  method                String
+  provider              String        @default("manual")
+  status                PaymentStatus @default(CAPTURED)
+  amount                Decimal       @db.Decimal(19, 4)
+  providerTransactionId String?
+  providerReference     String?
+}
+
+model SaleReturn {
+  id             String              @id @default(cuid())
+  tenantId       String
+  branchId       String
+  branch         Branch              @relation(fields: [branchId], references: [id])
+  saleId         String
+  sale           Sale                @relation(fields: [saleId], references: [id])
+  number         String
+  kind           ReturnKind          @default(RETURN)
+  status         ReturnStatus        @default(PENDING)
+  reason         String
+  notes          String?
+  refundMethod   String?
+  refundAmount   Decimal             @default(0) @db.Decimal(19, 4)
+  exchangeAmount Decimal             @default(0) @db.Decimal(19, 4)
+  restock        Boolean             @default(true)
+  createdById    String
+  approvedById   String?
+  createdAt      DateTime            @default(now())
+  postedAt       DateTime?
+  items          SaleReturnItem[]
+  exchangeItems  SaleReturnExchange[]
+  payments       PaymentTransaction[]
+
+  @@unique([tenantId, number])
+  @@index([tenantId, saleId])
+  @@index([tenantId, branchId, createdAt])
+}
+
+model SaleReturnItem {
+  id           String     @id @default(cuid())
+  saleReturnId String
+  saleReturn   SaleReturn @relation(fields: [saleReturnId], references: [id], onDelete: Cascade)
+  saleItemId   String
+  variantId    String
+  qty          Decimal    @db.Decimal(19, 4)
+  lineRefund   Decimal    @db.Decimal(19, 4)
+  restock      Boolean    @default(true)
+  reason       String?
+}
+
+model SaleReturnExchange {
+  id           String     @id @default(cuid())
+  saleReturnId String
+  saleReturn   SaleReturn @relation(fields: [saleReturnId], references: [id], onDelete: Cascade)
+  variantId    String
+  qty          Decimal    @db.Decimal(19, 4)
+  unitPrice    Decimal    @db.Decimal(19, 4)
+  lineTotal    Decimal    @db.Decimal(19, 4)
+}
+
+model SaleDocument {
+  id        String       @id @default(cuid())
+  saleId    String
+  sale      Sale         @relation(fields: [saleId], references: [id])
+  kind      DocumentKind
+  version   Int          @default(1)
+  snapshot  Json
+  createdAt DateTime     @default(now())
+
+  @@unique([saleId, kind, version])
+}
+
+model HeldSale {
+  id        String   @id @default(cuid())
+  tenantId  String
+  branchId  String
+  cashierId String
+  payload   Json
+  createdAt DateTime @default(now())
+}
+
+model DocumentNumberSequence {
+  id           String @id @default(cuid())
+  tenantId     String
+  branchId     String
+  branch       Branch @relation(fields: [branchId], references: [id])
+  documentType String
+  fiscalYear   Int
+  prefix       String
+  padding      Int    @default(6)
+  nextNumber   Int    @default(1)
+
+  @@unique([tenantId, branchId, documentType, fiscalYear])
+}
