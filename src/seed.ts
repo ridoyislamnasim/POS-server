@@ -2,10 +2,10 @@ import "dotenv/config";
 import { createHash } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
-import { DEFAULT_VARIANT_KEY } from "./shared/cartesian";
-import { invoiceTotals, lineTotals, toMoneyString } from "./shared/money";
-import { buildVariantKey } from "./shared/variant-key";
-import { CASHIER_KEYS, MANAGER_KEYS, Permissions } from "./shared/permissions";
+import { DEFAULT_VARIANT_KEY } from "./shared/cartesian.js";
+import { invoiceTotals, lineTotals, toMoneyString } from "./shared/money.js";
+import { buildVariantKey } from "./shared/variant-key.js";
+import { CASHIER_KEYS, MANAGER_KEYS, Permissions } from "./shared/permissions.js";
 
 const prisma = new PrismaClient();
 
