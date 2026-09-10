@@ -50,6 +50,8 @@ model EcommerceOrder {
   createdAt   DateTime  @default(now())
 
   @@unique([tenantId, channel, externalId])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, status, createdAt])
 }
 
 model Delivery {
@@ -74,15 +76,35 @@ model Delivery {
 }
 
 model NotificationLog {
-  id        String              @id @default(cuid())
-  tenantId  String
-  channel   NotificationChannel
-  to        String
-  template  String
-  status    NotificationStatus  @default(QUEUED)
-  payload   Json
-  error     String?
-  createdAt DateTime            @default(now())
+  id               String                @id @default(cuid())
+  tenantId         String
+  branchId         String?
+  recipientUserId  String?
+  recipientRole    String?
+  type             NotificationType      @default(SYSTEM_ALERT)
+  title            String                @default("")
+  message          String                @default("")
+  priority         NotificationPriority  @default(NORMAL)
+  channel          NotificationChannel
+  to               String
+  template         String
+  status           NotificationStatus    @default(QUEUED)
+  isRead           Boolean               @default(false)
+  readAt           DateTime?
+  actionUrl        String?
+  entityType       String?
+  entityId         String?
+  payload          Json
+  error            String?
+  idempotencyKey   String?
+  expiresAt        DateTime?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
 
+  @@unique([tenantId, idempotencyKey])
   @@index([tenantId, createdAt])
+  @@index([tenantId, recipientUserId, isRead, createdAt])
+  @@index([tenantId, branchId, createdAt])
+  @@index([tenantId, type, createdAt])
+  @@index([tenantId, priority, createdAt])
 }

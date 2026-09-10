@@ -1,3 +1,5 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
@@ -39,11 +41,14 @@ export function createApp() {
     cors({
       origin: originAllowlist,
       credentials: true,
+      exposedHeaders: ["Content-Disposition"],
     }),
   );
-  app.use(express.json({ limit: "5mb" }));
+  app.use(express.json({ limit: "12mb" }));
   app.use(cookieParser());
   app.use(csrfProtect);
+  const uploadRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../uploads");
+  app.use("/uploads", express.static(uploadRoot, { index: false, dotfiles: "deny" }));
 
   app.get("/api/health", (_req, res) => ok(res, { status: "ok" }));
   app.get("/api/ready", async (_req, res) => {
@@ -86,7 +91,8 @@ export function createApp() {
   app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error(err);
     if (res.headersSent) return;
-    return fail(res, "INTERNAL", err.message || "Unexpected error", 500);
+    const exposed = process.env.NODE_ENV === "production" ? "Unexpected error" : err.message || "Unexpected error";
+    return fail(res, "INTERNAL", exposed, 500);
   });
   return app;
 }

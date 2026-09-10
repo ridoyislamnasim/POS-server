@@ -1,12 +1,13 @@
 import { Router, type Request } from "express";
 import { prisma } from "../../lib/prisma.js";
-import { fail, ok } from "../../lib/envelope.js";
+import { fail, ok, okList } from "../../lib/envelope.js";
 import { requireAuth, requirePermission, requireTenant } from "../../middleware/auth.js";
 import { Permissions } from "../../shared/permissions.js";
 import { tenantId } from "../../lib/erp.js";
 import { writeAudit } from "../../lib/audit.js";
-import { assertBranch } from "../../lib/scope.js";
+import { assertBranch, visibleMembershipWhere, visibleUsersWhere } from "../../lib/scope.js";
 import type { AuthedRequest } from "../../types.js";
+import { acceptEnum, acceptId, dateRange, ilike, parseListQuery, paginationMeta, withPagination } from "../../lib/list-query.js";
 
 export const staffRouter = Router();
 staffRouter.use(requireAuth, requireTenant);
@@ -21,23 +22,25 @@ staffRouter.get("/permissions", requirePermission("user.manage"), async (_req, r
 
 staffRouter.get("/roles", requirePermission("user.manage"), async (req, res) => {
   const ctx = ctxOf(req);
+  const list = parseListQuery(req.query, { sortable: ["name", "key"], defaultSort: "name", defaultOrder: "asc" });
+  const q = list.search.toLowerCase();
   const roles = await prisma.role.findMany({
     where: { OR: [{ tenantId: tenantId(ctx) }, { tenantId: null }] },
     include: { permissions: { include: { permission: true } }, _count: { select: { users: true } } },
   });
-  return ok(
-    res,
-    roles
-      .filter((r) => r.key !== "PLATFORM_SUPER_ADMIN" || ctx.isPlatform)
-      .map((r) => ({
-        id: r.id,
-        key: r.key,
-        name: r.name,
-        tenantId: r.tenantId,
-        users: r._count.users,
-        permissions: r.permissions.map((p) => p.permission.key),
-      })),
-  );
+  const mapped = roles
+    .filter((r) => r.key !== "PLATFORM_SUPER_ADMIN" || ctx.isPlatform)
+    .filter((r) => !q || r.name.toLowerCase().includes(q) || r.key.toLowerCase().includes(q))
+    .map((r) => ({
+      id: r.id,
+      key: r.key,
+      name: r.name,
+      tenantId: r.tenantId,
+      users: r._count.users,
+      permissions: r.permissions.map((p) => p.permission.key),
+    }));
+  const rows = mapped.slice(list.skip, list.skip + list.take);
+  return okList(res, rows, paginationMeta(mapped.length, list.page, list.limit));
 });
 
 staffRouter.patch("/roles/:id", requirePermission("user.manage"), async (req, res) => {
@@ -63,17 +66,30 @@ staffRouter.patch("/roles/:id", requirePermission("user.manage"), async (req, re
 
 staffRouter.get("/attendance", requirePermission("staff.view"), async (req, res) => {
   const ctx = ctxOf(req);
-  const from = req.query.from ? String(req.query.from) : undefined;
-  const rows = await prisma.attendance.findMany({
-    where: {
-      tenantId: tenantId(ctx),
-      ...(from ? { workDate: { gte: new Date(from) } } : {}),
-    },
-    include: { user: { select: { id: true, name: true, email: true } }, branch: { select: { name: true } } },
-    orderBy: { workDate: "desc" },
-    take: 200,
+  const list = parseListQuery(req.query, { sortable: ["workDate", "createdAt", "status"], defaultSort: "workDate", defaultOrder: "desc" });
+  const status = acceptEnum(req.query.status, ["PRESENT", "ABSENT", "LATE", "LEAVE", "HALF_DAY"] as const);
+  const userId = acceptId(req.query.userId);
+  const dates = dateRange(list.dateFrom, list.dateTo);
+  const q = list.search;
+  const where = {
+    tenantId: tenantId(ctx),
+    ...(status ? { status } : {}),
+    ...(userId ? { userId } : {}),
+    ...(dates ? { workDate: dates } : {}),
+    ...(q ? { user: { OR: [{ name: ilike(q) }, { email: ilike(q) }] } } : {}),
+  };
+  const { rows, pagination } = await withPagination(list, {
+    find: (skip, take) =>
+      prisma.attendance.findMany({
+        where,
+        include: { user: { select: { id: true, name: true, email: true } }, branch: { select: { name: true } } },
+        orderBy: list.sortBy === "status" ? { status: list.sortOrder } : { workDate: list.sortOrder },
+        skip,
+        take,
+      }),
+    count: () => prisma.attendance.count({ where }),
   });
-  return ok(res, rows);
+  return okList(res, rows, pagination);
 });
 
 staffRouter.post("/attendance", requirePermission("attendance.manage"), async (req, res) => {
@@ -81,6 +97,11 @@ staffRouter.post("/attendance", requirePermission("attendance.manage"), async (r
   const { userId, branchId, status, checkIn, checkOut, notes, workDate } = req.body ?? {};
   if (!userId || !branchId) return fail(res, "VALIDATION", "userId and branchId required");
   assertBranch(ctx, branchId);
+  const member = await prisma.user.findFirst({
+    where: { id: String(userId), ...visibleUsersWhere(ctx) },
+    select: { id: true },
+  });
+  if (!member) return fail(res, "NOT_FOUND", "User not in tenant", 404);
   const row = await prisma.attendance.create({
     data: {
       tenantId: tenantId(ctx),
@@ -130,28 +151,87 @@ staffRouter.post("/shift-templates", requirePermission("shift.manage"), async (r
 });
 
 staffRouter.get("/security/logins", requirePermission("user.manage"), async (req, res) => {
-  const rows = await prisma.loginAttempt.findMany({ orderBy: { createdAt: "desc" }, take: 100 });
-  return ok(res, rows);
+  const ctx = ctxOf(req);
+  const list = parseListQuery(req.query, { sortable: ["createdAt"], defaultSort: "createdAt", defaultOrder: "desc" });
+  const members = await prisma.user.findMany({
+    where: visibleUsersWhere(ctx),
+    select: { email: true },
+  });
+  const emails = members.map((m) => m.email);
+  const q = list.search;
+  const where = {
+    email: emails.length ? { in: emails } : "__none__",
+    ...(q ? { email: { contains: q, mode: "insensitive" as const } } : {}),
+  };
+  const { rows, pagination } = await withPagination(list, {
+    find: (skip, take) =>
+      prisma.loginAttempt.findMany({
+        where: emails.length
+          ? { email: { in: emails, ...(q ? { contains: q, mode: "insensitive" as const } : {}) } }
+          : { email: "__none__" },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take,
+        select: { id: true, email: true, success: true, ip: true, createdAt: true },
+      }),
+    count: () =>
+      prisma.loginAttempt.count({
+        where: emails.length ? { email: { in: emails } } : { email: "__none__" },
+      }),
+  });
+  return okList(res, rows, pagination);
 });
 
 staffRouter.get("/security/sessions", requirePermission("user.manage"), async (req, res) => {
   const ctx = ctxOf(req);
+  const list = parseListQuery(req.query, { sortable: ["createdAt"], defaultSort: "createdAt", defaultOrder: "desc" });
   const memberIds = await prisma.userTenant.findMany({
-    where: { tenantId: tenantId(ctx) },
+    where: visibleMembershipWhere(ctx),
     select: { userId: true },
+    distinct: ["userId"],
   });
-  const rows = await prisma.session.findMany({
-    where: { userId: { in: memberIds.map((m) => m.userId) } },
-    include: { user: { select: { name: true, email: true } } },
-    orderBy: { createdAt: "desc" },
-    take: 100,
+  const ids = memberIds.map((m) => m.userId);
+  const q = list.search;
+  const where = {
+    userId: { in: ids },
+    ...(q ? { user: { OR: [{ name: ilike(q) }, { email: ilike(q) }] } } : {}),
+  };
+  const { rows, pagination } = await withPagination(list, {
+    find: (skip, take) =>
+      prisma.session.findMany({
+        where,
+        select: {
+          id: true,
+          userId: true,
+          expiresAt: true,
+          revokedAt: true,
+          userAgent: true,
+          ip: true,
+          createdAt: true,
+          user: { select: { name: true, email: true } },
+        },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take,
+      }),
+    count: () => prisma.session.count({ where }),
   });
-  return ok(res, rows);
+  return okList(res, rows, pagination);
 });
 
 staffRouter.post("/security/sessions/:id/revoke", requirePermission("user.manage"), async (req, res) => {
+  const ctx = ctxOf(req);
+  const memberIds = await prisma.userTenant.findMany({
+    where: visibleMembershipWhere(ctx),
+    select: { userId: true },
+    distinct: ["userId"],
+  });
+  const existing = await prisma.session.findFirst({
+    where: { id: String(req.params.id), userId: { in: memberIds.map((m) => m.userId) } },
+  });
+  if (!existing) return fail(res, "NOT_FOUND", "Session not found", 404);
   const row = await prisma.session.update({
-    where: { id: String(req.params.id) },
+    where: { id: existing.id },
     data: { revokedAt: new Date() },
   });
   return ok(res, row);

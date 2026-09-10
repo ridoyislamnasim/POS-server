@@ -32,6 +32,7 @@ model Expense {
 
   @@index([tenantId, businessDate])
   @@index([tenantId, branchId, createdAt])
+  @@index([tenantId, status, businessDate])
 }
 
 model Income {
@@ -70,6 +71,7 @@ model LedgerPayment {
 
   @@index([tenantId, partyType, partyId])
   @@index([tenantId, businessDate])
+  @@index([tenantId, createdAt])
 }
 
 model DailyClosing {

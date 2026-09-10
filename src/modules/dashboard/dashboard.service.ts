@@ -1,9 +1,17 @@
+import { Prisma, type SaleStatus } from "@prisma/client";
 import { prisma } from "../../lib/prisma.js";
 import { requireTenantId } from "../../lib/scope.js";
+import { branchScope, money, num } from "../../lib/erp.js";
 import { stockRepository } from "../inventory/stock.repository.js";
 import type { RequestContext } from "../../types.js";
 
-const LOW_STOCK = 5;
+const LOW_STOCK_FALLBACK = 5;
+const TOP_LIMIT = 8;
+const RECENT_LIMIT = 8;
+const ACTIVITY_LIMIT = 10;
+
+const COMPLETED: SaleStatus[] = ["COMPLETED", "PARTIALLY_RETURNED", "FULLY_RETURNED"];
+const SQL_SALE_DONE = Prisma.sql`s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'FULLY_RETURNED')`;
 
 function addDays(isoDate: string, days: number) {
   const d = new Date(`${isoDate}T00:00:00.000Z`);
@@ -24,95 +32,137 @@ export function periodRange(period: string, businessDate: string) {
 }
 
 function saleScope(ctx: RequestContext) {
-  const tenantId = requireTenantId(ctx);
+  return { tenantId: requireTenantId(ctx), ...branchScope(ctx) };
+}
+
+function dateRange(from: string, to: string) {
+  return { gte: new Date(from), lte: new Date(to) };
+}
+
+function completedWhere(ctx: RequestContext, from: string, to: string) {
   return {
-    tenantId,
-    ...(ctx.allBranches || ctx.isPlatform ? {} : { branchId: { in: ctx.branchIds } }),
+    ...saleScope(ctx),
+    businessDate: dateRange(from, to),
+    status: { in: COMPLETED },
   };
 }
 
-function money(n: number) {
-  return n.toFixed(2);
+function sqlBranch(ctx: RequestContext) {
+  if (ctx.allBranches || ctx.isPlatform) return Prisma.empty;
+  if (!ctx.branchIds.length) return Prisma.sql`AND FALSE`;
+  return Prisma.sql`AND s."branchId" IN (${Prisma.join(ctx.branchIds)})`;
+}
+
+function sqlIn(column: Prisma.Sql, ids: string[]) {
+  if (!ids.length) return Prisma.sql`AND FALSE`;
+  return Prisma.sql`AND ${column} IN (${Prisma.join(ids)})`;
+}
+
+function dateKey(value: Date | string) {
+  if (typeof value === "string") return value.slice(0, 10);
+  return value.toISOString().slice(0, 10);
+}
+
+async function lowStockThreshold(tenantId: string) {
+  const row = await prisma.tenantSettings.findUnique({
+    where: { tenantId },
+    select: { lowStockThreshold: true },
+  });
+  return row?.lowStockThreshold ?? LOW_STOCK_FALLBACK;
 }
 
 export async function dashboardSummary(ctx: RequestContext, from: string, to: string) {
-  const where = { ...saleScope(ctx), businessDate: { gte: new Date(from), lte: new Date(to) } };
-  const completed = {
-    ...where,
-    status: { in: ["COMPLETED", "PARTIALLY_RETURNED", "FULLY_RETURNED"] as Array<
-      "COMPLETED" | "PARTIALLY_RETURNED" | "FULLY_RETURNED"
-    > },
+  const tenantId = requireTenantId(ctx);
+  const where = completedWhere(ctx, from, to);
+  const expenseWhere = {
+    tenantId,
+    businessDate: dateRange(from, to),
+    status: "POSTED" as const,
+    ...branchScope(ctx),
   };
 
-  const [sales, returned, branches, allowedLocs] = await Promise.all([
-    prisma.sale.findMany({
-      where: completed,
-      include: { items: true, payments: true },
-    }),
-    prisma.sale.findMany({
-      where: { ...where, status: { in: ["PARTIALLY_RETURNED", "FULLY_RETURNED"] } },
-      select: { id: true, total: true },
-    }),
-    prisma.branch.findMany({
-      where: {
-        tenantId: ctx.tenantId!,
-        operationalStatus: "OPEN",
-        ...(ctx.allBranches || ctx.isPlatform ? {} : { id: { in: ctx.branchIds } }),
-      },
-      select: { id: true },
-    }),
-    stockRepository.allowedLocationIds(ctx),
-  ]);
+  const [totals, returnsCount, customerCountRows, profitRows, branches, expenses, customerDue, supplierDue, refunds, allowedLocs, threshold] =
+    await Promise.all([
+      prisma.sale.aggregate({
+        where,
+        _sum: { total: true, discount: true },
+        _count: true,
+      }),
+      prisma.sale.count({
+        where: {
+          ...saleScope(ctx),
+          businessDate: dateRange(from, to),
+          status: { in: ["PARTIALLY_RETURNED", "FULLY_RETURNED"] },
+        },
+      }),
+      prisma.$queryRaw<[{ n: number }]>`
+        SELECT COUNT(DISTINCT s."customerId")::int AS n
+        FROM "Sale" s
+        WHERE s."tenantId" = ${tenantId}
+          AND s."businessDate" >= ${from}::date
+          AND s."businessDate" <= ${to}::date
+          AND ${SQL_SALE_DONE}
+          AND s."customerId" IS NOT NULL
+          ${sqlBranch(ctx)}
+      `,
+      prisma.$queryRaw<[{ profit: unknown }]>`
+        SELECT COALESCE(SUM(si."lineTotal" - si.qty * COALESCE(pv.cost, 0)), 0) AS profit
+        FROM "SaleItem" si
+        INNER JOIN "Sale" s ON s.id = si."saleId"
+        LEFT JOIN "ProductVariant" pv ON pv.id = si."variantId"
+        WHERE s."tenantId" = ${tenantId}
+          AND s."businessDate" >= ${from}::date
+          AND s."businessDate" <= ${to}::date
+          AND ${SQL_SALE_DONE}
+          ${sqlBranch(ctx)}
+      `,
+      prisma.branch.count({
+        where: {
+          tenantId,
+          operationalStatus: "OPEN",
+          ...(ctx.allBranches || ctx.isPlatform ? {} : { id: { in: ctx.branchIds } }),
+        },
+      }),
+      prisma.expense.aggregate({ where: expenseWhere, _sum: { amount: true } }),
+      prisma.customer.aggregate({ where: { tenantId }, _sum: { creditDue: true } }),
+      prisma.supplier.aggregate({ where: { tenantId }, _sum: { creditDue: true } }),
+      prisma.paymentTransaction.aggregate({
+        where: {
+          status: { in: ["REFUNDED", "PARTIALLY_REFUNDED"] },
+          sale: where,
+        },
+        _sum: { amount: true },
+      }),
+      stockRepository.allowedLocationIds(ctx),
+      lowStockThreshold(tenantId),
+    ]);
 
-  const stockRows = await prisma.stock.findMany({
-    where: { tenantId: ctx.tenantId!, locationId: { in: [...allowedLocs] } },
-    include: { variant: { select: { cost: true } } },
-  });
+  const locIds = [...allowedLocs];
+  const stockRows = locIds.length
+    ? await prisma.$queryRaw<[{ value: unknown; low: number; out: number; total: number }]>`
+        SELECT
+          COALESCE(SUM(st.quantity * COALESCE(NULLIF(st."unitCost", 0), pv.cost, 0)), 0) AS value,
+          COUNT(*) FILTER (
+            WHERE (st.quantity - COALESCE(st."reservedQuantity", 0)) > 0
+              AND (st.quantity - COALESCE(st."reservedQuantity", 0)) <= GREATEST(st."reorderLevel", ${threshold})
+          )::int AS low,
+          COUNT(*) FILTER (
+            WHERE (st.quantity - COALESCE(st."reservedQuantity", 0)) <= 0
+          )::int AS out,
+          COUNT(*)::int AS total
+        FROM "Stock" st
+        JOIN "ProductVariant" pv ON pv.id = st."variantId"
+        WHERE st."tenantId" = ${tenantId}
+          ${sqlIn(Prisma.sql`st."locationId"`, locIds)}
+      `
+    : [{ value: 0, low: 0, out: 0, total: 0 }];
 
-  let stockValue = 0;
-  let lowStockItems = 0;
-  for (const row of stockRows) {
-    const qty = Number(row.quantity);
-    const reserved = Number(row.reservedQuantity ?? 0);
-    const available = qty - reserved;
-    stockValue += qty * Number(row.variant.cost);
-    if (available <= LOW_STOCK) lowStockItems += 1;
-  }
-
-  const todayCustomers = new Set(sales.map((s) => s.customerId).filter(Boolean)).size;
-  let profit = 0;
-  const variantIds = [...new Set(sales.flatMap((s) => s.items.map((i) => i.variantId)))];
-  const costs = await prisma.productVariant.findMany({
-    where: { id: { in: variantIds }, tenantId: ctx.tenantId! },
-    select: { id: true, cost: true },
-  });
-  const costMap = new Map(costs.map((c) => [c.id, Number(c.cost)]));
-  for (const sale of sales) {
-    for (const item of sale.items) {
-      profit += Number(item.lineTotal) - Number(item.qty) * (costMap.get(item.variantId) ?? 0);
-    }
-  }
-
-  const refunds = sales
-    .flatMap((s) => s.payments)
-    .filter((p) => p.status === "REFUNDED" || p.status === "PARTIALLY_REFUNDED")
-    .reduce((n, p) => n + Number(p.amount), 0);
-
-  const expenseSum = await prisma.expense.aggregate({
-    where: { tenantId: ctx.tenantId!, businessDate: { gte: new Date(from), lte: new Date(to) }, status: "POSTED" },
-    _sum: { amount: true },
-  });
-  const customerDue = await prisma.customer.aggregate({
-    where: { tenantId: ctx.tenantId! },
-    _sum: { creditDue: true },
-  });
-  const supplierDue = await prisma.supplier.aggregate({
-    where: { tenantId: ctx.tenantId! },
-    _sum: { creditDue: true },
-  });
-  const orders = sales.length;
-  const revenue = sales.reduce((n, s) => n + Number(s.total), 0);
-  const expenses = Number(expenseSum._sum.amount ?? 0);
+  const stock = stockRows[0] ?? { value: 0, low: 0, out: 0, total: 0 };
+  const revenue = num(totals._sum.total);
+  const profit = num(profitRows[0]?.profit);
+  const due = num(customerDue._sum.creditDue);
+  const lowStockItems = stock.low + stock.out;
+  const orders = totals._count;
 
   return {
     from,
@@ -121,61 +171,46 @@ export async function dashboardSummary(ctx: RequestContext, from: string, to: st
     todaysTransactions: orders,
     orders,
     revenue: money(revenue),
-    todaysCustomers: todayCustomers,
-    todaysReturns: returned.length,
-    todaysReturnAmount: money(refunds),
+    todaysCustomers: customerCountRows[0]?.n ?? 0,
+    todaysReturns: returnsCount,
+    todaysReturnAmount: money(num(refunds._sum.amount)),
     todaysProfit: money(profit),
     profit: money(profit),
-    expenses: money(expenses),
-    due: money(Number(customerDue._sum.creditDue ?? 0)),
-    customerDue: money(Number(customerDue._sum.creditDue ?? 0)),
-    supplierDue: money(Number(supplierDue._sum.creditDue ?? 0)),
+    expenses: money(num(expenses._sum.amount)),
+    due: money(due),
+    customerDue: money(due),
+    supplierDue: money(num(supplierDue._sum.creditDue)),
+    discounts: money(num(totals._sum.discount)),
     grossMargin: money(revenue === 0 ? 0 : (profit / revenue) * 100),
-    currentStockValue: money(stockValue),
+    currentStockValue: money(num(stock.value)),
     lowStockItems,
-    activeOutlets: branches.length,
+    outOfStockItems: stock.out,
+    stockSkuCount: stock.total,
+    activeOutlets: branches,
   };
 }
 
-export async function dashboardSales(ctx: RequestContext, period: string) {
-  const { from, to } = periodRange(period, ctx.businessDate);
-  const sales = await prisma.sale.findMany({
-    where: {
-      ...saleScope(ctx),
-      status: { in: ["COMPLETED", "PARTIALLY_RETURNED", "FULLY_RETURNED"] },
-      businessDate: { gte: new Date(from), lte: new Date(to) },
-    },
-    include: { payments: true },
-  });
+export async function dashboardSales(ctx: RequestContext, period: string, from: string, to: string) {
+  const where = completedWhere(ctx, from, to);
+  const [totals, grouped] = await Promise.all([
+    prisma.sale.aggregate({
+      where,
+      _sum: { total: true, discount: true },
+      _count: true,
+    }),
+    prisma.sale.groupBy({
+      by: ["businessDate"],
+      where,
+      _sum: { total: true },
+      _count: true,
+    }),
+  ]);
 
-  const byMethod: Record<string, number> = { CASH: 0, CARD: 0, MFS: 0 };
-  let refunds = 0;
-  let discounts = 0;
   const buckets = new Map<string, { sales: number; count: number }>();
-
-  for (const sale of sales) {
-    discounts += Number(sale.discount);
-    const key = sale.businessDate.toISOString().slice(0, 10);
-    const bucket = buckets.get(key) ?? { sales: 0, count: 0 };
-    bucket.sales += Number(sale.total);
-    bucket.count += 1;
-    buckets.set(key, bucket);
-    for (const p of sale.payments) {
-      if (p.status === "REFUNDED" || p.status === "PARTIALLY_REFUNDED") {
-        refunds += Number(p.amount);
-        continue;
-      }
-      if (p.status !== "CAPTURED") continue;
-      const method = p.method.toUpperCase();
-      if (method === "CASH" || method === "CARD" || method === "MFS") {
-        byMethod[method] += Number(p.amount);
-      } else {
-        byMethod[method] = (byMethod[method] ?? 0) + Number(p.amount);
-      }
-    }
+  for (const row of grouped) {
+    buckets.set(dateKey(row.businessDate), { sales: num(row._sum.total), count: row._count });
   }
 
-  const total = sales.reduce((n, s) => n + Number(s.total), 0);
   const series: { date: string; sales: number; count: number }[] = [];
   let cursor = from;
   while (cursor <= to) {
@@ -184,174 +219,297 @@ export async function dashboardSales(ctx: RequestContext, period: string) {
     cursor = addDays(cursor, 1);
   }
 
+  const total = num(totals._sum.total);
+  const count = totals._count;
   return {
     period,
     from,
     to,
     totalSales: money(total),
-    transactionCount: sales.length,
-    averageTransactionValue: money(sales.length ? total / sales.length : 0),
-    cash: money(byMethod.CASH),
-    card: money(byMethod.CARD),
-    mfs: money(byMethod.MFS),
-    refunds: money(refunds),
-    discounts: money(discounts),
-    payments: Object.entries(byMethod).map(([method, amount]) => ({ method, amount: money(amount) })),
+    transactionCount: count,
+    averageTransactionValue: money(count ? total / count : 0),
+    discounts: money(num(totals._sum.discount)),
     series,
   };
 }
 
-export async function dashboardInventory(ctx: RequestContext) {
-  const allowed = await stockRepository.allowedLocationIds(ctx);
-  const rows = await prisma.stock.findMany({
-    where: { tenantId: ctx.tenantId!, locationId: { in: [...allowed] } },
-    include: {
-      variant: { include: { product: { select: { name: true, code: true } } } },
-      location: { select: { id: true, name: true } },
-    },
+export async function dashboardPayments(ctx: RequestContext, from: string, to: string) {
+  const where = completedWhere(ctx, from, to);
+  const grouped = await prisma.paymentTransaction.groupBy({
+    by: ["method", "status"],
+    where: { sale: where },
+    _sum: { amount: true },
   });
-  let stockValue = 0;
-  const low: typeof rows = [];
-  const out: typeof rows = [];
-  for (const row of rows) {
-    const available = Number(row.quantity) - Number(row.reservedQuantity ?? 0);
-    stockValue += Number(row.quantity) * Number(row.variant.cost);
-    if (available <= 0) out.push(row);
-    else if (available <= LOW_STOCK) low.push(row);
+
+  const byMethod: Record<string, number> = { CASH: 0, CARD: 0, MFS: 0 };
+  let refunds = 0;
+  let captured = 0;
+  for (const row of grouped) {
+    const amount = num(row._sum.amount);
+    const method = row.method.toUpperCase();
+    if (row.status === "REFUNDED" || row.status === "PARTIALLY_REFUNDED") {
+      refunds += amount;
+      continue;
+    }
+    if (row.status !== "CAPTURED") continue;
+    captured += amount;
+    byMethod[method] = (byMethod[method] ?? 0) + amount;
   }
+
+  const payments = Object.entries(byMethod)
+    .filter(([method, amount]) => amount > 0 || methodIsCore(method))
+    .map(([method, amount]) => ({ method, amount: money(amount) }));
+
   return {
-    stockValue: money(stockValue),
-    lowStockCount: low.length,
-    outOfStockCount: out.length,
-    lowStock: low.slice(0, 20).map(mapStockLine),
-    outOfStock: out.slice(0, 20).map(mapStockLine),
+    from,
+    to,
+    cash: money(byMethod.CASH ?? 0),
+    card: money(byMethod.CARD ?? 0),
+    mfs: money(byMethod.MFS ?? 0),
+    refunds: money(refunds),
+    captured: money(captured),
+    payments,
   };
 }
 
-function mapStockLine(row: {
-  quantity: { toString(): string };
-  reservedQuantity?: { toString(): string } | null;
-  variant: { sku: string; cost: { toString(): string }; product: { name: string; code: string } };
-  location: { id: string; name: string };
-}) {
-  const qty = Number(row.quantity);
-  const reserved = Number(row.reservedQuantity ?? 0);
+function methodIsCore(method: string) {
+  return method === "CASH" || method === "CARD" || method === "MFS";
+}
+
+export async function dashboardInventory(ctx: RequestContext) {
+  const tenantId = requireTenantId(ctx);
+  const [allowed, threshold] = await Promise.all([
+    stockRepository.allowedLocationIds(ctx),
+    lowStockThreshold(tenantId),
+  ]);
+  const locIds = [...allowed];
+  if (!locIds.length) {
+    return {
+      stockValue: money(0),
+      lowStockCount: 0,
+      outOfStockCount: 0,
+      inStockCount: 0,
+      skuCount: 0,
+      threshold,
+      lowStock: [],
+      outOfStock: [],
+    };
+  }
+
+  const locSql = sqlIn(Prisma.sql`st."locationId"`, locIds);
+  const [aggRows, lowRows, outRows] = await Promise.all([
+    prisma.$queryRaw<[{ value: unknown; low: number; out: number; total: number }]>`
+      SELECT
+        COALESCE(SUM(st.quantity * COALESCE(NULLIF(st."unitCost", 0), pv.cost, 0)), 0) AS value,
+        COUNT(*) FILTER (
+          WHERE (st.quantity - COALESCE(st."reservedQuantity", 0)) > 0
+            AND (st.quantity - COALESCE(st."reservedQuantity", 0)) <= GREATEST(st."reorderLevel", ${threshold})
+        )::int AS low,
+        COUNT(*) FILTER (
+          WHERE (st.quantity - COALESCE(st."reservedQuantity", 0)) <= 0
+        )::int AS out,
+        COUNT(*)::int AS total
+      FROM "Stock" st
+      JOIN "ProductVariant" pv ON pv.id = st."variantId"
+      WHERE st."tenantId" = ${tenantId}
+        ${locSql}
+    `,
+    prisma.$queryRaw<StockLineRow[]>`
+      SELECT
+        v.sku,
+        p.name AS product,
+        p.code,
+        l.name AS location,
+        (st.quantity - COALESCE(st."reservedQuantity", 0)) AS available,
+        COALESCE(st."reservedQuantity", 0) AS reserved,
+        COALESCE(NULLIF(st."unitCost", 0), v.cost, 0) AS cost
+      FROM "Stock" st
+      JOIN "ProductVariant" v ON v.id = st."variantId"
+      JOIN "Product" p ON p.id = v."productId"
+      JOIN "Location" l ON l.id = st."locationId"
+      WHERE st."tenantId" = ${tenantId}
+        ${locSql}
+        AND (st.quantity - COALESCE(st."reservedQuantity", 0)) > 0
+        AND (st.quantity - COALESCE(st."reservedQuantity", 0)) <= GREATEST(st."reorderLevel", ${threshold})
+      ORDER BY available ASC
+      LIMIT ${TOP_LIMIT}
+    `,
+    prisma.$queryRaw<StockLineRow[]>`
+      SELECT
+        v.sku,
+        p.name AS product,
+        p.code,
+        l.name AS location,
+        (st.quantity - COALESCE(st."reservedQuantity", 0)) AS available,
+        COALESCE(st."reservedQuantity", 0) AS reserved,
+        COALESCE(NULLIF(st."unitCost", 0), v.cost, 0) AS cost
+      FROM "Stock" st
+      JOIN "ProductVariant" v ON v.id = st."variantId"
+      JOIN "Product" p ON p.id = v."productId"
+      JOIN "Location" l ON l.id = st."locationId"
+      WHERE st."tenantId" = ${tenantId}
+        ${locSql}
+        AND (st.quantity - COALESCE(st."reservedQuantity", 0)) <= 0
+      ORDER BY available ASC
+      LIMIT ${TOP_LIMIT}
+    `,
+  ]);
+
+  const agg = aggRows[0] ?? { value: 0, low: 0, out: 0, total: 0 };
+  const inStock = Math.max(agg.total - agg.low - agg.out, 0);
   return {
-    sku: row.variant.sku,
-    product: row.variant.product.name,
-    code: row.variant.product.code,
-    location: row.location.name,
-    available: money(qty - reserved),
+    stockValue: money(num(agg.value)),
+    lowStockCount: agg.low,
+    outOfStockCount: agg.out,
+    inStockCount: inStock,
+    skuCount: agg.total,
+    threshold,
+    lowStock: lowRows.map(mapStockLine),
+    outOfStock: outRows.map(mapStockLine),
+  };
+}
+
+type StockLineRow = {
+  sku: string;
+  product: string;
+  code: string;
+  location: string;
+  available: unknown;
+  reserved: unknown;
+  cost: unknown;
+};
+
+function mapStockLine(row: StockLineRow) {
+  const available = num(row.available);
+  const reserved = num(row.reserved);
+  const cost = num(row.cost);
+  return {
+    sku: row.sku,
+    product: row.product,
+    code: row.code,
+    location: row.location,
+    available: money(available),
     reserved: money(reserved),
-    cost: money(Number(row.variant.cost)),
-    stockValue: money(qty * Number(row.variant.cost)),
+    cost: money(cost),
+    stockValue: money(available * cost),
   };
 }
 
 export async function dashboardCustomers(ctx: RequestContext, from: string, to: string) {
-  const sales = await prisma.sale.findMany({
-    where: {
-      ...saleScope(ctx),
-      businessDate: { gte: new Date(from), lte: new Date(to) },
-      status: { in: ["COMPLETED", "PARTIALLY_RETURNED", "FULLY_RETURNED"] },
-    },
-    select: { customerId: true },
-  });
-  const withCustomer = sales.filter((s) => s.customerId);
+  const tenantId = requireTenantId(ctx);
+  const [row] = await prisma.$queryRaw<
+    [{ transactions: number; walkin: number; customers: number }]
+  >`
+    SELECT
+      COUNT(*)::int AS transactions,
+      COUNT(*) FILTER (WHERE s."customerId" IS NULL)::int AS walkin,
+      COUNT(DISTINCT s."customerId")::int AS customers
+    FROM "Sale" s
+    WHERE s."tenantId" = ${tenantId}
+      AND s."businessDate" >= ${from}::date
+      AND s."businessDate" <= ${to}::date
+      AND ${SQL_SALE_DONE}
+      ${sqlBranch(ctx)}
+  `;
   return {
     from,
     to,
-    customersWithSales: new Set(withCustomer.map((s) => s.customerId)).size,
-    walkInTransactions: sales.length - withCustomer.length,
-    transactions: sales.length,
+    customersWithSales: row?.customers ?? 0,
+    walkInTransactions: row?.walkin ?? 0,
+    transactions: row?.transactions ?? 0,
   };
 }
 
 export async function dashboardReturns(ctx: RequestContext, from: string, to: string) {
-  const rows = await prisma.sale.findMany({
-    where: {
-      ...saleScope(ctx),
-      businessDate: { gte: new Date(from), lte: new Date(to) },
-      status: { in: ["PARTIALLY_RETURNED", "FULLY_RETURNED"] },
-    },
-    select: { id: true, total: true, invoiceNumber: true },
-  });
-  const refunds = await prisma.paymentTransaction.aggregate({
-    where: {
-      status: { in: ["REFUNDED", "PARTIALLY_REFUNDED"] },
-      sale: saleScope(ctx),
-    },
-    _sum: { amount: true },
-    _count: true,
-  });
+  const saleWhere = {
+    ...saleScope(ctx),
+    businessDate: dateRange(from, to),
+    status: { in: ["PARTIALLY_RETURNED" as const, "FULLY_RETURNED" as const] },
+  };
+  const [count, refunds] = await Promise.all([
+    prisma.sale.count({ where: saleWhere }),
+    prisma.paymentTransaction.aggregate({
+      where: {
+        status: { in: ["REFUNDED", "PARTIALLY_REFUNDED"] },
+        sale: {
+          ...saleScope(ctx),
+          businessDate: dateRange(from, to),
+        },
+      },
+      _sum: { amount: true },
+      _count: true,
+    }),
+  ]);
   return {
     from,
     to,
-    count: rows.length,
-    amount: money(Number(refunds._sum.amount ?? 0)),
+    count,
+    amount: money(num(refunds._sum.amount)),
     refundPayments: refunds._count,
   };
 }
 
 export async function dashboardTopProducts(ctx: RequestContext, from: string, to: string) {
-  const items = await prisma.saleItem.findMany({
-    where: {
-      sale: {
-        ...saleScope(ctx),
-        businessDate: { gte: new Date(from), lte: new Date(to) },
-        status: { in: ["COMPLETED", "PARTIALLY_RETURNED", "FULLY_RETURNED"] },
-      },
-    },
-    select: {
-      variantId: true,
-      qty: true,
-      lineTotal: true,
-      productNameSnapshot: true,
-      skuSnapshot: true,
-    },
-  });
-  const map = new Map<
-    string,
-    { variantId: string; name: string; sku: string; qty: number; revenue: number }
-  >();
-  for (const item of items) {
-    const cur = map.get(item.variantId) ?? {
-      variantId: item.variantId,
-      name: item.productNameSnapshot,
-      sku: item.skuSnapshot,
-      qty: 0,
-      revenue: 0,
-    };
-    cur.qty += Number(item.qty);
-    cur.revenue += Number(item.lineTotal);
-    map.set(item.variantId, cur);
-  }
-  return [...map.values()]
-    .sort((a, b) => b.revenue - a.revenue)
-    .slice(0, 10)
-    .map((r) => ({ ...r, qty: money(r.qty), revenue: money(r.revenue) }));
+  const tenantId = requireTenantId(ctx);
+  const rows = await prisma.$queryRaw<
+    { variantId: string; name: string; sku: string; qty: unknown; revenue: unknown }[]
+  >`
+    SELECT
+      si."variantId",
+      MIN(si."productNameSnapshot") AS name,
+      MIN(si."skuSnapshot") AS sku,
+      SUM(si.qty) AS qty,
+      SUM(si."lineTotal") AS revenue
+    FROM "SaleItem" si
+    INNER JOIN "Sale" s ON s.id = si."saleId"
+    WHERE s."tenantId" = ${tenantId}
+      AND s."businessDate" >= ${from}::date
+      AND s."businessDate" <= ${to}::date
+      AND ${SQL_SALE_DONE}
+      ${sqlBranch(ctx)}
+    GROUP BY si."variantId"
+    ORDER BY SUM(si."lineTotal") DESC
+    LIMIT ${TOP_LIMIT}
+  `;
+  return rows.map((r) => ({
+    variantId: r.variantId,
+    name: r.name,
+    sku: r.sku,
+    qty: money(num(r.qty)),
+    revenue: money(num(r.revenue)),
+    revenueValue: Number(num(r.revenue).toFixed(2)),
+  }));
 }
 
 export async function dashboardRecentSales(ctx: RequestContext) {
   const sales = await prisma.sale.findMany({
-    where: saleScope(ctx),
+    where: { ...saleScope(ctx), status: { not: "DRAFT" } },
     orderBy: { createdAt: "desc" },
-    take: 15,
-    include: { payments: true, branch: true, customer: true },
+    take: RECENT_LIMIT,
+    select: {
+      id: true,
+      invoiceNumber: true,
+      total: true,
+      createdAt: true,
+      status: true,
+      cashierId: true,
+      customer: { select: { name: true } },
+      branch: { select: { name: true } },
+      payments: { select: { method: true, status: true } },
+    },
   });
   const cashierIds = [...new Set(sales.map((s) => s.cashierId))];
-  const cashiers = await prisma.user.findMany({
-    where: { id: { in: cashierIds } },
-    select: { id: true, name: true },
-  });
+  const cashiers = cashierIds.length
+    ? await prisma.user.findMany({ where: { id: { in: cashierIds } }, select: { id: true, name: true } })
+    : [];
   const names = new Map(cashiers.map((c) => [c.id, c.name]));
   return sales.map((s) => ({
     id: s.id,
     invoiceNumber: s.invoiceNumber,
-    customer: s.customer?.name ?? (s.customerSnapshot as { name?: string } | null)?.name ?? "Walk-in",
+    customer: s.customer?.name ?? "Walk-in",
     cashier: names.get(s.cashierId) ?? s.cashierId,
     outlet: s.branch.name,
-    amount: money(Number(s.total)),
+    amount: money(num(s.total)),
     payment: s.payments.map((p) => p.method).join("+") || "—",
     time: s.createdAt.toISOString(),
     status: s.status,
@@ -359,71 +517,87 @@ export async function dashboardRecentSales(ctx: RequestContext) {
 }
 
 export async function dashboardTopCustomers(ctx: RequestContext, from: string, to: string) {
-  const sales = await prisma.sale.findMany({
-    where: {
-      ...saleScope(ctx),
-      businessDate: { gte: new Date(from), lte: new Date(to) },
-      status: { in: ["COMPLETED", "PARTIALLY_RETURNED", "FULLY_RETURNED"] },
-      customerId: { not: null },
-    },
-    include: { customer: true },
+  const grouped = await prisma.sale.groupBy({
+    by: ["customerId"],
+    where: { ...completedWhere(ctx, from, to), customerId: { not: null } },
+    _sum: { total: true },
+    _count: true,
+    orderBy: { _sum: { total: "desc" } },
+    take: TOP_LIMIT,
   });
-  const map = new Map<string, { id: string; name: string; phone: string; count: number; revenue: number }>();
-  for (const s of sales) {
-    if (!s.customer) continue;
-    const cur = map.get(s.customer.id) ?? {
-      id: s.customer.id,
-      name: s.customer.name,
-      phone: s.customer.phone,
-      count: 0,
-      revenue: 0,
-    };
-    cur.count += 1;
-    cur.revenue += Number(s.total);
-    map.set(s.customer.id, cur);
-  }
-  return [...map.values()]
-    .sort((a, b) => b.revenue - a.revenue)
-    .slice(0, 10)
-    .map((r) => ({ ...r, revenue: money(r.revenue) }));
+  const ids = grouped.map((g) => g.customerId).filter((id): id is string => Boolean(id));
+  const customers = ids.length
+    ? await prisma.customer.findMany({
+        where: { id: { in: ids }, tenantId: requireTenantId(ctx) },
+        select: { id: true, name: true, phone: true },
+      })
+    : [];
+  const map = new Map(customers.map((c) => [c.id, c]));
+  return grouped
+    .filter((g) => g.customerId && map.has(g.customerId))
+    .map((g) => {
+      const c = map.get(g.customerId!)!;
+      return {
+        id: c.id,
+        name: c.name,
+        phone: c.phone,
+        count: g._count,
+        revenue: money(num(g._sum.total)),
+        revenueValue: Number(num(g._sum.total).toFixed(2)),
+      };
+    });
 }
 
 export async function dashboardByCashier(ctx: RequestContext, from: string, to: string) {
-  const sales = await prisma.sale.findMany({
-    where: {
-      ...saleScope(ctx),
-      businessDate: { gte: new Date(from), lte: new Date(to) },
-      status: { in: ["COMPLETED", "PARTIALLY_RETURNED"] },
-    },
+  const grouped = await prisma.sale.groupBy({
+    by: ["cashierId"],
+    where: completedWhere(ctx, from, to),
+    _sum: { total: true },
+    _count: true,
+    orderBy: { _sum: { total: "desc" } },
+    take: TOP_LIMIT,
   });
-  const ids = [...new Set(sales.map((s) => s.cashierId))];
-  const users = await prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } });
+  const ids = grouped.map((g) => g.cashierId);
+  const users = ids.length
+    ? await prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })
+    : [];
   const names = new Map(users.map((u) => [u.id, u.name]));
-  const map = new Map<string, { cashier: string; count: number; total: number }>();
-  for (const s of sales) {
-    const cur = map.get(s.cashierId) ?? { cashier: names.get(s.cashierId) ?? s.cashierId, count: 0, total: 0 };
-    cur.count += 1;
-    cur.total += Number(s.total);
-    map.set(s.cashierId, cur);
-  }
-  return [...map.values()].map((r) => ({ ...r, total: money(r.total) }));
+  return grouped.map((g) => ({
+    cashierId: g.cashierId,
+    cashier: names.get(g.cashierId) ?? g.cashierId,
+    count: g._count,
+    total: money(num(g._sum.total)),
+    totalValue: Number(num(g._sum.total).toFixed(2)),
+  }));
 }
 
 export async function dashboardHourly(ctx: RequestContext, from: string, to: string) {
-  const sales = await prisma.sale.findMany({
-    where: {
-      ...saleScope(ctx),
-      businessDate: { gte: new Date(from), lte: new Date(to) },
-      status: { in: ["COMPLETED", "PARTIALLY_RETURNED"] },
-    },
-  });
-  const hours = Array.from({ length: 24 }, (_, h) => ({ hour: String(h).padStart(2, "0"), sales: 0, count: 0 }));
-  for (const s of sales) {
-    const h = s.createdAt.getHours();
-    hours[h].sales += Number(s.total);
-    hours[h].count += 1;
+  const tenantId = requireTenantId(ctx);
+  const rows = await prisma.$queryRaw<{ hour: number; sales: unknown; count: number }[]>`
+    SELECT
+      EXTRACT(HOUR FROM s."createdAt")::int AS hour,
+      COALESCE(SUM(s.total), 0) AS sales,
+      COUNT(*)::int AS count
+    FROM "Sale" s
+    WHERE s."tenantId" = ${tenantId}
+      AND s."businessDate" >= ${from}::date
+      AND s."businessDate" <= ${to}::date
+      AND ${SQL_SALE_DONE}
+      ${sqlBranch(ctx)}
+    GROUP BY 1
+  `;
+  const hours = Array.from({ length: 24 }, (_, h) => ({
+    hour: String(h).padStart(2, "0"),
+    sales: 0,
+    count: 0,
+  }));
+  for (const row of rows) {
+    const h = Number(row.hour);
+    if (h < 0 || h > 23) continue;
+    hours[h].sales = Number(num(row.sales).toFixed(2));
+    hours[h].count = row.count;
   }
-  return hours.map((h) => ({ ...h, sales: Number(h.sales.toFixed(2)) }));
+  return hours;
 }
 
 export async function dashboardRecentActivity(ctx: RequestContext) {
@@ -431,7 +605,8 @@ export async function dashboardRecentActivity(ctx: RequestContext) {
   const rows = await prisma.auditLog.findMany({
     where: { tenantId },
     orderBy: { createdAt: "desc" },
-    take: 15,
+    take: ACTIVITY_LIMIT,
+    select: { id: true, action: true, entityType: true, entityId: true, createdAt: true },
   });
   return rows.map((r) => ({
     id: r.id,

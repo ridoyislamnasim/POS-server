@@ -1,38 +1,60 @@
 // Stock is the physical balance on a Location.
 // Channel is sale origin (Sale.channel), never a second inventory database.
 // StockMovement is append-only. Do not update or delete movements.
+//
+// Buckets:
+//   quantity            = sellable on-hand
+//   reservedQuantity    = hold against sellable
+//   damagedQuantity     = damaged / defective / expired
+//   quarantineQuantity  = returned but not restockable
+// Available = quantity - reservedQuantity
+// Physical  = quantity + damagedQuantity + quarantineQuantity
 
 model Stock {
-  id                String         @id @default(cuid())
-  tenantId          String
-  locationId        String
-  location          Location       @relation(fields: [locationId], references: [id])
-  variantId         String
-  variant           ProductVariant @relation(fields: [variantId], references: [id])
-  channel           ChannelType    @default(STORE)
-  quantity          Decimal        @db.Decimal(19, 4)
-  reservedQuantity  Decimal        @default(0) @db.Decimal(19, 4)
+  id                  String         @id @default(cuid())
+  tenantId            String
+  locationId          String
+  location            Location       @relation(fields: [locationId], references: [id])
+  variantId           String
+  variant             ProductVariant @relation(fields: [variantId], references: [id])
+  channel             ChannelType    @default(STORE)
+  quantity            Decimal        @db.Decimal(19, 4)
+  reservedQuantity    Decimal        @default(0) @db.Decimal(19, 4)
+  damagedQuantity     Decimal        @default(0) @db.Decimal(19, 4)
+  quarantineQuantity  Decimal        @default(0) @db.Decimal(19, 4)
+  reorderLevel        Decimal        @default(0) @db.Decimal(19, 4)
+  unitCost            Decimal        @default(0) @db.Decimal(19, 4)
 
   @@unique([tenantId, locationId, channel, variantId])
+  @@index([tenantId, locationId])
 }
 
 model StockMovement {
-  id            String            @id @default(cuid())
-  tenantId      String
-  locationId    String
-  variantId     String
-  type          StockMovementType
-  quantity      Decimal           @db.Decimal(19, 4)
-  saleId        String?
-  reason        String?
-  notes         String?
-  createdById   String?
-  referenceType String?
-  referenceId   String?
-  createdAt     DateTime          @default(now())
+  id              String            @id @default(cuid())
+  tenantId        String
+  locationId      String
+  variantId       String
+  type            StockMovementType
+  bucket          StockBucket       @default(AVAILABLE)
+  quantity        Decimal           @db.Decimal(19, 4)
+  beforeQuantity  Decimal?          @db.Decimal(19, 4)
+  afterQuantity   Decimal?          @db.Decimal(19, 4)
+  unitCost        Decimal?          @db.Decimal(19, 4)
+  value           Decimal?          @db.Decimal(19, 4)
+  saleId          String?
+  reason          String?
+  notes           String?
+  createdById     String?
+  referenceType   String?
+  referenceId     String?
+  createdAt       DateTime          @default(now())
 
   @@index([tenantId, createdAt])
   @@index([tenantId, createdAt, id])
+  @@index([tenantId, variantId, createdAt])
+  @@index([tenantId, locationId, createdAt])
+  @@index([tenantId, referenceType, referenceId])
+  @@index([tenantId, type, createdAt])
 }
 
 model StockTake {
@@ -60,4 +82,113 @@ model StockTakeLine {
   systemQty   Decimal   @db.Decimal(19, 4)
   countedQty  Decimal   @db.Decimal(19, 4)
   variance    Decimal   @db.Decimal(19, 4)
+}
+
+model StockReceipt {
+  id              String             @id @default(cuid())
+  tenantId        String
+  branchId        String
+  branch          Branch             @relation(fields: [branchId], references: [id])
+  locationId      String
+  number          String
+  kind            ReceiptKind
+  status          ReceiptStatus      @default(DRAFT)
+  supplierId      String?
+  supplier        Supplier?          @relation(fields: [supplierId], references: [id])
+  purchaseId      String?
+  purchase        Purchase?          @relation(fields: [purchaseId], references: [id])
+  purchaseOrderId String?
+  saleReturnId    String?
+  fromLocationId  String?
+  sourceRef       String?
+  notes           String?
+  totalQty        Decimal            @default(0) @db.Decimal(19, 4)
+  totalCost       Decimal            @default(0) @db.Decimal(19, 4)
+  createdById     String
+  receivedById    String?
+  receivedAt      DateTime?
+  cancelledById   String?
+  cancelledAt     DateTime?
+  cancelReason    String?
+  idempotencyKey  String?
+  items           StockReceiptItem[]
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@unique([tenantId, number])
+  @@index([tenantId, branchId, createdAt])
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, kind, createdAt])
+}
+
+model StockReceiptItem {
+  id         String       @id @default(cuid())
+  receiptId  String
+  receipt    StockReceipt @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  variantId  String
+  qty        Decimal      @db.Decimal(19, 4)
+  unitCost   Decimal      @db.Decimal(19, 4)
+  lineCost   Decimal      @db.Decimal(19, 4)
+  batchLot   String?
+  expiryDate DateTime?    @db.Date
+  notes      String?
+}
+
+model StockDamage {
+  id             String            @id @default(cuid())
+  tenantId       String
+  branchId       String
+  branch         Branch            @relation(fields: [branchId], references: [id])
+  locationId     String
+  number         String
+  status         DamageStatus      @default(DRAFT)
+  reason         DamageReason
+  description    String?
+  attachmentUrl  String?
+  totalQty       Decimal           @default(0) @db.Decimal(19, 4)
+  totalCost      Decimal           @default(0) @db.Decimal(19, 4)
+  createdById    String
+  submittedAt    DateTime?
+  approvedById   String?
+  approvedAt     DateTime?
+  rejectedById   String?
+  rejectedAt     DateTime?
+  rejectReason   String?
+  saleReturnId   String?
+  idempotencyKey String?
+  items          StockDamageItem[]
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@unique([tenantId, number])
+  @@index([tenantId, branchId, createdAt])
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, reason, createdAt])
+}
+
+model StockDamageItem {
+  id           String      @id @default(cuid())
+  damageId     String
+  damage       StockDamage @relation(fields: [damageId], references: [id], onDelete: Cascade)
+  variantId    String
+  skuSnapshot  String?
+  qty          Decimal     @db.Decimal(19, 4)
+  unitCost     Decimal     @db.Decimal(19, 4)
+  lineCost     Decimal     @db.Decimal(19, 4)
+  stockBefore  Decimal?    @db.Decimal(19, 4)
+  stockAfter   Decimal?    @db.Decimal(19, 4)
+  notes        String?
+}
+
+model StockAlertState {
+  id              String          @id @default(cuid())
+  tenantId        String
+  locationId      String
+  variantId       String
+  channel         ChannelType     @default(STORE)
+  level           StockAlertLevel @default(OK)
+  lastNotifiedAt  DateTime?
+  generation      Int             @default(0)
+
+  @@unique([tenantId, locationId, channel, variantId])
 }

@@ -22,11 +22,12 @@ model Customer {
   salesOrders    SalesOrder[]
   ecommerceOrders EcommerceOrder[]
   createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+  updatedAt      DateTime    @default(now()) @updatedAt
 
   @@unique([tenantId, phoneCanonical])
   @@index([tenantId, createdAt, id])
   @@index([tenantId, name])
+  @@index([tenantId, status])
 }
 
 model LoyaltyTransaction {

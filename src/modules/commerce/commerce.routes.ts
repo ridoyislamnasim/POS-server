@@ -1,10 +1,11 @@
 import { Router, type Request } from "express";
 import { prisma } from "../../lib/prisma.js";
-import { fail, ok } from "../../lib/envelope.js";
+import { fail, ok, okList } from "../../lib/envelope.js";
 import { requireAuth, requirePermission, requireTenant } from "../../middleware/auth.js";
 import { branchScope, nextDocNumber, num, tenantId } from "../../lib/erp.js";
 import { assertBranch } from "../../lib/scope.js";
 import type { AuthedRequest } from "../../types.js";
+import { acceptEnum, acceptId, createdAtRange, ilike, parseListQuery, withPagination } from "../../lib/list-query.js";
 
 export const commerceRouter = Router();
 commerceRouter.use(requireAuth, requireTenant);
@@ -15,13 +16,39 @@ function ctxOf(req: Request) {
 
 commerceRouter.get("/sales-orders", requirePermission("order.view"), async (req, res) => {
   const ctx = ctxOf(req);
-  const rows = await prisma.salesOrder.findMany({
-    where: { tenantId: tenantId(ctx), ...branchScope(ctx) },
-    include: { customer: true, branch: { select: { name: true } }, items: true },
-    orderBy: { createdAt: "desc" },
-    take: 200,
+  const list = parseListQuery(req.query, { sortable: ["createdAt", "number", "total", "status"], defaultSort: "createdAt", defaultOrder: "desc" });
+  const status = acceptEnum(req.query.status, ["DRAFT", "CONFIRMED", "PACKED", "SHIPPED", "DELIVERED", "CANCELLED", "CONVERTED"] as const);
+  const customerId = acceptId(req.query.customerId);
+  const dates = createdAtRange(list);
+  const q = list.search;
+  const where = {
+    tenantId: tenantId(ctx),
+    ...branchScope(ctx),
+    ...(status ? { status } : {}),
+    ...(customerId ? { customerId } : {}),
+    ...(dates ? { createdAt: dates } : {}),
+    ...(q ? { OR: [{ number: ilike(q) }, { notes: ilike(q) }, { customer: { name: ilike(q) } }] } : {}),
+  };
+  const { rows, pagination } = await withPagination(list, {
+    find: (skip, take) =>
+      prisma.salesOrder.findMany({
+        where,
+        select: {
+          id: true,
+          number: true,
+          total: true,
+          status: true,
+          createdAt: true,
+          customer: { select: { id: true, name: true } },
+          branch: { select: { name: true } },
+        },
+        orderBy: list.sortBy === "number" || list.sortBy === "total" || list.sortBy === "status" ? { [list.sortBy]: list.sortOrder } : { createdAt: list.sortOrder },
+        skip,
+        take,
+      }),
+    count: () => prisma.salesOrder.count({ where }),
   });
-  return ok(res, rows);
+  return okList(res, rows, pagination);
 });
 
 commerceRouter.post("/sales-orders", requirePermission("order.manage"), async (req, res) => {
@@ -69,15 +96,63 @@ commerceRouter.post("/sales-orders", requirePermission("order.manage"), async (r
   return ok(res, row, undefined, 201);
 });
 
+commerceRouter.patch("/sales-orders/:id", requirePermission("order.manage"), async (req, res) => {
+  const ctx = ctxOf(req);
+  const existing = await prisma.salesOrder.findFirst({
+    where: { id: String(req.params.id), tenantId: tenantId(ctx) },
+  });
+  if (!existing) return fail(res, "NOT_FOUND", "Sales order not found", 404);
+  const status = req.body?.status as string | undefined;
+  if (status && !["DRAFT", "CONFIRMED", "PACKED", "SHIPPED", "DELIVERED", "CANCELLED"].includes(status)) {
+    return fail(res, "VALIDATION", "Invalid status");
+  }
+  if (status === "CANCELLED" && existing.status === "CONVERTED") {
+    return fail(res, "CONFLICT", "Converted orders cannot be cancelled", 409);
+  }
+  const row = await prisma.salesOrder.update({
+    where: { id: existing.id },
+    data: { status: status as never, notes: req.body?.notes },
+    include: { items: true, customer: true },
+  });
+  return ok(res, row);
+});
+
 commerceRouter.get("/ecommerce", requirePermission("order.view"), async (req, res) => {
   const ctx = ctxOf(req);
-  const rows = await prisma.ecommerceOrder.findMany({
-    where: { tenantId: tenantId(ctx) },
-    include: { customer: true },
-    orderBy: { createdAt: "desc" },
-    take: 200,
+  const list = parseListQuery(req.query, { sortable: ["createdAt", "total", "status"], defaultSort: "createdAt", defaultOrder: "desc" });
+  const status = acceptEnum(req.query.status, ["DRAFT", "CONFIRMED", "PACKED", "SHIPPED", "DELIVERED", "CANCELLED", "CONVERTED"] as const);
+  const q = list.search;
+  const dates = createdAtRange(list);
+  const where = {
+    tenantId: tenantId(ctx),
+    ...(status ? { status } : {}),
+    ...(dates ? { createdAt: dates } : {}),
+    ...(q
+      ? {
+          OR: [{ channel: ilike(q) }, { externalId: ilike(q) }, { customer: { name: ilike(q) } }],
+        }
+      : {}),
+  };
+  const { rows, pagination } = await withPagination(list, {
+    find: (skip, take) =>
+      prisma.ecommerceOrder.findMany({
+        where,
+        select: {
+          id: true,
+          channel: true,
+          externalId: true,
+          status: true,
+          total: true,
+          createdAt: true,
+          customer: { select: { id: true, name: true } },
+        },
+        orderBy: list.sortBy === "total" || list.sortBy === "status" ? { [list.sortBy]: list.sortOrder } : { createdAt: list.sortOrder },
+        skip,
+        take,
+      }),
+    count: () => prisma.ecommerceOrder.count({ where }),
   });
-  return ok(res, rows);
+  return okList(res, rows, pagination);
 });
 
 commerceRouter.post("/ecommerce", requirePermission("order.manage"), async (req, res) => {
@@ -103,13 +178,39 @@ commerceRouter.post("/ecommerce", requirePermission("order.manage"), async (req,
 
 commerceRouter.get("/deliveries", requirePermission("delivery.manage"), async (req, res) => {
   const ctx = ctxOf(req);
-  const rows = await prisma.delivery.findMany({
-    where: { tenantId: tenantId(ctx), ...branchScope(ctx) },
-    include: { branch: { select: { name: true } }, salesOrder: true },
-    orderBy: { createdAt: "desc" },
-    take: 200,
+  const list = parseListQuery(req.query, { sortable: ["createdAt", "status"], defaultSort: "createdAt", defaultOrder: "desc" });
+  const status = acceptEnum(req.query.status, ["PENDING", "ASSIGNED", "IN_TRANSIT", "DELIVERED", "FAILED", "RETURNED"] as const);
+  const q = list.search;
+  const dates = createdAtRange(list);
+  const where = {
+    tenantId: tenantId(ctx),
+    ...branchScope(ctx),
+    ...(status ? { status } : {}),
+    ...(dates ? { createdAt: dates } : {}),
+    ...(q ? { OR: [{ address: ilike(q) }, { phone: { contains: q } }, { tracking: ilike(q) }, { courier: ilike(q) }] } : {}),
+  };
+  const { rows, pagination } = await withPagination(list, {
+    find: (skip, take) =>
+      prisma.delivery.findMany({
+        where,
+        select: {
+          id: true,
+          status: true,
+          address: true,
+          phone: true,
+          courier: true,
+          tracking: true,
+          createdAt: true,
+          branch: { select: { name: true } },
+          salesOrder: { select: { number: true } },
+        },
+        orderBy: list.sortBy === "status" ? { status: list.sortOrder } : { createdAt: list.sortOrder },
+        skip,
+        take,
+      }),
+    count: () => prisma.delivery.count({ where }),
   });
-  return ok(res, rows);
+  return okList(res, rows, pagination);
 });
 
 commerceRouter.post("/deliveries", requirePermission("delivery.manage"), async (req, res) => {
@@ -146,6 +247,8 @@ commerceRouter.patch("/deliveries/:id", requirePermission("delivery.manage"), as
       status: req.body?.status,
       courier: req.body?.courier,
       tracking: req.body?.tracking,
+      address: req.body?.address,
+      phone: req.body?.phone,
       deliveredAt: req.body?.status === "DELIVERED" ? new Date() : undefined,
       notes: req.body?.notes,
     },

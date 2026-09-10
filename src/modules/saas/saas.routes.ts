@@ -1,11 +1,13 @@
 import { Router, type Request } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { prisma } from "../../lib/prisma.js";
-import { fail, ok } from "../../lib/envelope.js";
+import { fail, ok, okList } from "../../lib/envelope.js";
 import { requireAuth, requirePermission, requireTenant } from "../../middleware/auth.js";
 import { tenantId } from "../../lib/erp.js";
 import { writeAudit } from "../../lib/audit.js";
 import type { AuthedRequest } from "../../types.js";
+import { parseListQuery, withPagination } from "../../lib/list-query.js";
+import { enqueueOutbox } from "../outbox/enqueue.js";
 
 export const saasRouter = Router();
 saasRouter.use(requireAuth, requireTenant);
@@ -26,7 +28,7 @@ saasRouter.get("/subscription", requirePermission("plan.manage"), async (req, re
   });
   const usage = {
     branches: await prisma.branch.count({ where: { tenantId: tenantId(ctx) } }),
-    users: await prisma.userTenant.count({ where: { tenantId: tenantId(ctx) } }),
+    users: await prisma.userTenant.count({ where: { tenantId: tenantId(ctx), isPlatform: false } }),
     products: await prisma.product.count({ where: { tenantId: tenantId(ctx) } }),
     warehouses: await prisma.location.count({ where: { tenantId: tenantId(ctx), type: "WAREHOUSE" } }),
   };
@@ -105,10 +107,29 @@ saasRouter.post("/backup", requirePermission("backup.manage"), async (req, res) 
     },
   });
   await writeAudit({ ctx, action: "backup.create", entityType: "BackupRecord", entityId: rec.id });
+  await enqueueOutbox(prisma, {
+    tenantId: tid,
+    type: "BACKUP_RESULT",
+    aggregateId: rec.id,
+    payload: { ok: true, message: "Manual backup finished.", entityType: "BackupRecord", entityId: rec.id },
+  });
   return ok(res, { record: rec, payload });
 });
 
 saasRouter.get("/backups", requirePermission("backup.manage"), async (req, res) => {
   const ctx = ctxOf(req);
-  return ok(res, await prisma.backupRecord.findMany({ where: { tenantId: tenantId(ctx) }, orderBy: { createdAt: "desc" }, take: 50 }));
+  const list = parseListQuery(req.query, { sortable: ["createdAt"], defaultSort: "createdAt", defaultOrder: "desc" });
+  const where = { tenantId: tenantId(ctx) };
+  const { rows, pagination } = await withPagination(list, {
+    find: (skip, take) =>
+      prisma.backupRecord.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip,
+        take,
+        select: { id: true, status: true, note: true, payloadSize: true, createdAt: true, createdById: true },
+      }),
+    count: () => prisma.backupRecord.count({ where }),
+  });
+  return okList(res, rows, pagination);
 });

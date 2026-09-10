@@ -19,7 +19,7 @@ model TenantSettings {
   smsEnabled         Boolean  @default(false)
   emailEnabled       Boolean  @default(false)
   invoiceFooter      String?
-  updatedAt          DateTime @updatedAt
+  updatedAt          DateTime @default(now()) @updatedAt
 }
 
 model InvoiceTemplate {

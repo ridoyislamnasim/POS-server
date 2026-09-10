@@ -42,9 +42,11 @@ model Branch {
   attendances    Attendance[]
   salesOrders    SalesOrder[]
   deliveries     Delivery[]
-  saleReturns    SaleReturn[]
+  saleReturns     SaleReturn[]
   purchaseReturns PurchaseReturn[]
-  stockTakes     StockTake[]
+  stockTakes      StockTake[]
+  stockReceipts   StockReceipt[]
+  stockDamages    StockDamage[]
 
   @@unique([tenantId, code])
 }

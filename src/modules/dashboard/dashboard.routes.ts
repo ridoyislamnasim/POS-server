@@ -9,6 +9,7 @@ import {
   dashboardCustomers,
   dashboardHourly,
   dashboardInventory,
+  dashboardPayments,
   dashboardRecentActivity,
   dashboardRecentSales,
   dashboardReturns,
@@ -51,8 +52,13 @@ dashboardRouter.get("/summary", async (req, res) => {
 });
 
 dashboardRouter.get("/sales", async (req, res) => {
-  const period = String(req.query.period ?? "today");
-  return ok(res, await dashboardSales((req as AuthedRequest).ctx, period));
+  const { period, from, to } = range(req as AuthedRequest);
+  return ok(res, await dashboardSales((req as AuthedRequest).ctx, period, from, to));
+});
+
+dashboardRouter.get("/payments", async (req, res) => {
+  const { from, to } = range(req as AuthedRequest);
+  return ok(res, await dashboardPayments((req as AuthedRequest).ctx, from, to));
 });
 
 dashboardRouter.get("/inventory", async (req, res) => {

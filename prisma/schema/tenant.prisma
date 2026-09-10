@@ -15,18 +15,21 @@ model Tenant {
   trialEnd            DateTime?
   catalogVersion      Int                @default(1)
   createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
+  updatedAt           DateTime           @default(now()) @updatedAt
 
   plan       Plan?           @relation(fields: [planId], references: [id])
   businesses Business[]
   locations  Location[]
   branches   Branch[]
   users      UserTenant[]
-  products   Product[]
-  sales      Sale[]
-  customers  Customer[]
-  suppliers  Supplier[]
-  settings   TenantSettings?
+  products      Product[]
+  categories    Category[]
+  brands        Brand[]
+  units         Unit[]
+  sales         Sale[]
+  customers     Customer[]
+  suppliers     Supplier[]
+  settings      TenantSettings?
 }
 
 model Currency {

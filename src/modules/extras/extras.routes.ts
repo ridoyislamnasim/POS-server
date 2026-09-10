@@ -5,6 +5,7 @@ import { requireAuth, requirePermission, requireTenant } from "../../middleware/
 import { parseCsv, tenantId } from "../../lib/erp.js";
 import { normalizeBdPhone } from "../../shared/phone.js";
 import type { AuthedRequest } from "../../types.js";
+import { notificationRouter } from "../notifications/notification.routes.js";
 
 export const extrasRouter = Router();
 extrasRouter.use(requireAuth, requireTenant);
@@ -100,63 +101,7 @@ extrasRouter.post("/import/customers", requirePermission("import.manage"), async
   return ok(res, { created, errors });
 });
 
-extrasRouter.post("/notifications", requirePermission("notification.send"), async (req, res) => {
-  const ctx = ctxOf(req);
-  const { channel, to, template, payload } = req.body ?? {};
-  if (!channel || !to || !template) return fail(res, "VALIDATION", "channel, to, template required");
-  const row = await prisma.notificationLog.create({
-    data: {
-      tenantId: tenantId(ctx),
-      channel,
-      to: String(to),
-      template,
-      payload: payload ?? {},
-      status: "QUEUED",
-    },
-  });
-  const updated = await prisma.notificationLog.update({
-    where: { id: row.id },
-    data: { status: "SENT" },
-  });
-  return ok(res, updated, undefined, 201);
-});
-
-extrasRouter.get("/notifications", requirePermission("notification.send"), async (req, res) => {
-  const ctx = ctxOf(req);
-  const rows = await prisma.notificationLog.findMany({
-    where: { tenantId: tenantId(ctx) },
-    orderBy: { createdAt: "desc" },
-    take: 100,
-  });
-  return ok(res, rows);
-});
-
-extrasRouter.post("/notifications/low-stock", requirePermission("notification.send"), async (req, res) => {
-  const ctx = ctxOf(req);
-  const settings = await prisma.tenantSettings.findUnique({ where: { tenantId: tenantId(ctx) } });
-  const threshold = settings?.lowStockThreshold ?? 5;
-  const stock = await prisma.stock.findMany({
-    where: { tenantId: tenantId(ctx) },
-    include: { variant: { include: { product: true } } },
-  });
-  const low = stock.filter((s) => Number(s.quantity) - Number(s.reservedQuantity ?? 0) <= threshold);
-  const logs = [];
-  for (const s of low.slice(0, 25)) {
-    logs.push(
-      await prisma.notificationLog.create({
-        data: {
-          tenantId: tenantId(ctx),
-          channel: "IN_APP",
-          to: "ops",
-          template: "LOW_STOCK",
-          payload: { sku: s.variant.sku, product: s.variant.product.name, qty: String(s.quantity) },
-          status: "SENT",
-        },
-      }),
-    );
-  }
-  return ok(res, { threshold, count: low.length, queued: logs.length, items: logs });
-});
+extrasRouter.use("/notifications", notificationRouter);
 
 extrasRouter.get("/export", requirePermission("import.manage"), async (req, res) => {
   const ctx = ctxOf(req);

@@ -1,10 +1,11 @@
 import { Router, type Request } from "express";
 import { prisma } from "../../lib/prisma.js";
-import { fail, ok } from "../../lib/envelope.js";
+import { fail, ok, okList } from "../../lib/envelope.js";
 import { requireAuth, requirePermission, requireTenant } from "../../middleware/auth.js";
 import { tenantId } from "../../lib/erp.js";
 import { writeAudit } from "../../lib/audit.js";
 import type { AuthedRequest } from "../../types.js";
+import { acceptEnum, ilike, parseListQuery, withPagination } from "../../lib/list-query.js";
 
 export const suppliersRouter = Router();
 suppliersRouter.use(requireAuth, requireTenant);
@@ -15,24 +16,40 @@ function ctxOf(req: Request) {
 
 suppliersRouter.get("/", requirePermission("supplier.view"), async (req, res) => {
   const ctx = ctxOf(req);
-  const q = String(req.query.q ?? "").trim();
-  const rows = await prisma.supplier.findMany({
-    where: {
-      tenantId: tenantId(ctx),
-      ...(q
-        ? {
-            OR: [
-              { name: { contains: q, mode: "insensitive" } },
-              { phone: { contains: q } },
-              { email: { contains: q, mode: "insensitive" } },
-            ],
-          }
-        : {}),
-    },
-    orderBy: { name: "asc" },
-    take: 200,
+  const list = parseListQuery(req.query, { sortable: ["name", "createdAt", "creditDue"], defaultSort: "name", defaultOrder: "asc" });
+  const status = acceptEnum(req.query.status, ["ACTIVE", "INACTIVE"] as const);
+  const q = list.search;
+  const where = {
+    tenantId: tenantId(ctx),
+    ...(status ? { status } : {}),
+    ...(q
+      ? {
+          OR: [{ name: ilike(q) }, { phone: { contains: q } }, { email: ilike(q) }, { taxId: ilike(q) }],
+        }
+      : {}),
+  };
+  const { rows, pagination } = await withPagination(list, {
+    find: (skip, take) =>
+      prisma.supplier.findMany({
+        where,
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          email: true,
+          address: true,
+          taxId: true,
+          creditDue: true,
+          status: true,
+          createdAt: true,
+        },
+        orderBy: list.sortBy === "creditDue" || list.sortBy === "createdAt" ? { [list.sortBy]: list.sortOrder } : { name: list.sortOrder },
+        skip,
+        take,
+      }),
+    count: () => prisma.supplier.count({ where }),
   });
-  return ok(res, rows);
+  return okList(res, rows, pagination);
 });
 
 suppliersRouter.get("/:id", requirePermission("supplier.view"), async (req, res) => {

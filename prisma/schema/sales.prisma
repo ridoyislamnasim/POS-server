@@ -46,6 +46,10 @@ model Sale {
   @@index([tenantId, branchId, createdAt])
   @@index([tenantId, businessDate, id])
   @@index([tenantId, createdAt, id])
+  @@index([tenantId, customerId, createdAt])
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, branchId, businessDate, status])
+  @@index([tenantId, businessDate, status])
 }
 
 model SaleItem {
@@ -65,6 +69,9 @@ model SaleItem {
   skuSnapshot         String
   variantSnapshot     String
   associateId         String?
+
+  @@index([saleId])
+  @@index([variantId])
 }
 
 model PaymentTransaction {
@@ -79,27 +86,33 @@ model PaymentTransaction {
   amount                Decimal       @db.Decimal(19, 4)
   providerTransactionId String?
   providerReference     String?
+
+  @@index([saleId])
+  @@index([saleId, status])
 }
 
 model SaleReturn {
-  id             String              @id @default(cuid())
+  id             String               @id @default(cuid())
   tenantId       String
   branchId       String
-  branch         Branch              @relation(fields: [branchId], references: [id])
+  branch         Branch               @relation(fields: [branchId], references: [id])
   saleId         String
-  sale           Sale                @relation(fields: [saleId], references: [id])
+  sale           Sale                 @relation(fields: [saleId], references: [id])
   number         String
-  kind           ReturnKind          @default(RETURN)
-  status         ReturnStatus        @default(PENDING)
+  kind           ReturnKind           @default(RETURN)
+  status         ReturnStatus         @default(PENDING)
+  refundStatus   RefundStatus         @default(PENDING)
   reason         String
   notes          String?
   refundMethod   String?
-  refundAmount   Decimal             @default(0) @db.Decimal(19, 4)
-  exchangeAmount Decimal             @default(0) @db.Decimal(19, 4)
-  restock        Boolean             @default(true)
+  refundAmount   Decimal              @default(0) @db.Decimal(19, 4)
+  refundedAmount Decimal              @default(0) @db.Decimal(19, 4)
+  exchangeAmount Decimal              @default(0) @db.Decimal(19, 4)
+  restock        Boolean              @default(true)
   createdById    String
   approvedById   String?
-  createdAt      DateTime            @default(now())
+  idempotencyKey String?
+  createdAt      DateTime             @default(now())
   postedAt       DateTime?
   items          SaleReturnItem[]
   exchangeItems  SaleReturnExchange[]
@@ -108,18 +121,22 @@ model SaleReturn {
   @@unique([tenantId, number])
   @@index([tenantId, saleId])
   @@index([tenantId, branchId, createdAt])
+  @@index([tenantId, status, createdAt])
 }
 
 model SaleReturnItem {
-  id           String     @id @default(cuid())
+  id           String          @id @default(cuid())
   saleReturnId String
-  saleReturn   SaleReturn @relation(fields: [saleReturnId], references: [id], onDelete: Cascade)
+  saleReturn   SaleReturn      @relation(fields: [saleReturnId], references: [id], onDelete: Cascade)
   saleItemId   String
   variantId    String
-  qty          Decimal    @db.Decimal(19, 4)
-  lineRefund   Decimal    @db.Decimal(19, 4)
-  restock      Boolean    @default(true)
+  qty          Decimal         @db.Decimal(19, 4)
+  unitPrice    Decimal         @default(0) @db.Decimal(19, 4)
+  lineRefund   Decimal         @db.Decimal(19, 4)
+  condition    ReturnCondition @default(GOOD)
+  restock      Boolean         @default(true)
   reason       String?
+  notes        String?
 }
 
 model SaleReturnExchange {

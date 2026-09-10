@@ -14,8 +14,10 @@ model Supplier {
   status         PartyStatus @default(ACTIVE)
   purchases      Purchase[]
   purchaseOrders PurchaseOrder[]
+  products       Product[]
+  receipts       StockReceipt[]
   createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+  updatedAt      DateTime    @default(now()) @updatedAt
 
   @@index([tenantId, name])
 }
@@ -77,11 +79,14 @@ model Purchase {
   notes           String?
   items           PurchaseItem[]
   returns         PurchaseReturn[]
+  receipts        StockReceipt[]
   createdById     String?
   createdAt       DateTime       @default(now())
 
   @@unique([tenantId, invoiceNumber])
   @@index([tenantId, branchId, createdAt])
+  @@index([tenantId, supplierId, createdAt])
+  @@index([tenantId, status, createdAt])
 }
 
 model PurchaseItem {

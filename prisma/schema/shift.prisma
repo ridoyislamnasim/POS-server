@@ -17,4 +17,7 @@ model Shift {
   closingCash  Decimal?    @db.Decimal(19, 4)
   expectedCash Decimal?    @db.Decimal(19, 4)
   sales        Sale[]
+
+  @@index([tenantId, openedAt])
+  @@index([tenantId, status, openedAt])
 }

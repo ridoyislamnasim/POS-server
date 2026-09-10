@@ -2,6 +2,7 @@ import { Prisma, type PaymentStatus, type SaleStatus } from "@prisma/client";
 import { invoiceTotals, lineTotals, toMoneyString } from "../../shared/money.js";
 import { prisma } from "../../lib/prisma.js";
 import { ForbiddenError, InsufficientStockError, assertBranch, hasPermission, requireTenantId } from "../../lib/scope.js";
+import { applyStockChange } from "../inventory/stock.engine.js";
 import type { RequestContext } from "../../types.js";
 
 type PayLine = { method: string; amount: string; status?: PaymentStatus };
@@ -38,10 +39,62 @@ export async function nextInvoiceNumber(
       AND "fiscalYear" = ${input.fiscalYear}
     RETURNING "nextNumber", "prefix", "padding"
   `;
-  const seq = rows[0];
+  let seq = rows[0];
+  if (!seq) {
+    const branch = await tx.branch.findFirst({ where: { id: input.branchId, tenantId: input.tenantId } });
+    const prefix = `${branch?.code ?? "POS"}-INV-${input.fiscalYear}-`;
+    try {
+      await tx.documentNumberSequence.create({
+        data: {
+          tenantId: input.tenantId,
+          branchId: input.branchId,
+          documentType: "INVOICE",
+          fiscalYear: input.fiscalYear,
+          prefix,
+          padding: 6,
+          nextNumber: 2,
+        },
+      });
+    } catch {
+      /* unique race — another till created it */
+    }
+    const retry = await tx.$queryRaw<Array<{ nextNumber: number; prefix: string; padding: number }>>`
+      UPDATE "DocumentNumberSequence"
+      SET "nextNumber" = "nextNumber" + 1
+      WHERE "tenantId" = ${input.tenantId}
+        AND "branchId" = ${input.branchId}
+        AND "documentType" = 'INVOICE'
+        AND "fiscalYear" = ${input.fiscalYear}
+      RETURNING "nextNumber", "prefix", "padding"
+    `;
+    seq = retry[0];
+  }
   if (!seq) throw Object.assign(new Error("Invoice sequence missing"), { code: "VALIDATION" });
-  const used = seq.nextNumber - 1;
-  return `${seq.prefix}${String(used).padStart(seq.padding, "0")}`;
+  let used = seq.nextNumber - 1;
+  let invoiceNumber = `${seq.prefix}${String(used).padStart(seq.padding, "0")}`;
+  const taken = await tx.sale.findFirst({
+    where: { tenantId: input.tenantId, invoiceNumber },
+    select: { id: true },
+  });
+  if (!taken) return invoiceNumber;
+
+  const last = await tx.sale.findFirst({
+    where: { tenantId: input.tenantId, branchId: input.branchId, invoiceNumber: { startsWith: seq.prefix } },
+    orderBy: { invoiceNumber: "desc" },
+    select: { invoiceNumber: true },
+  });
+  const parsed = Number(last?.invoiceNumber?.slice(seq.prefix.length) ?? used);
+  const nextUsed = (Number.isFinite(parsed) ? parsed : used) + 1;
+  await tx.documentNumberSequence.updateMany({
+    where: {
+      tenantId: input.tenantId,
+      branchId: input.branchId,
+      documentType: "INVOICE",
+      fiscalYear: input.fiscalYear,
+    },
+    data: { nextNumber: nextUsed + 1 },
+  });
+  return `${seq.prefix}${String(nextUsed).padStart(seq.padding, "0")}`;
 }
 
 export async function createSale(input: {
@@ -110,7 +163,12 @@ export async function createSale(input: {
       amount: new Prisma.Decimal(p.amount),
       status: paymentStatus(p),
     }));
-    const recordedPaid = payRows.reduce((s, p) => s.plus(p.amount), new Prisma.Decimal(0));
+    if (payRows.some((p) => p.amount.lessThanOrEqualTo(0))) {
+      throw Object.assign(new Error("Payment amount must be greater than zero"), { code: "VALIDATION" });
+    }
+    const capturedPaid = payRows
+      .filter((p) => p.status === "CAPTURED")
+      .reduce((s, p) => s.plus(p.amount), new Prisma.Decimal(0));
 
     const computed = [];
     for (const item of input.items) {
@@ -156,28 +214,26 @@ export async function createSale(input: {
         throw Object.assign(new Error("Discount over 10% needs manager approval"), { code: "DISCOUNT_APPROVAL_REQUIRED" });
       }
     }
-    const dueAmt = Prisma.Decimal.max(totals.total.minus(recordedPaid), 0);
-    if (dueAmt.greaterThan(0) && !customer) {
+    const dueAmt = Prisma.Decimal.max(totals.total.minus(capturedPaid), 0);
+    const status: SaleStatus =
+      capturedPaid.greaterThanOrEqualTo(totals.total)
+        ? "COMPLETED"
+        : capturedPaid.greaterThan(0)
+          ? "COMPLETED"
+          : saleStatusFromPayments(payRows, totals.total);
+
+    if (status === "COMPLETED" && dueAmt.greaterThan(0) && !customer) {
       throw Object.assign(new Error("Customer required for credit / due sales"), { code: "VALIDATION" });
     }
-    if (customer && dueAmt.greaterThan(0)) {
+    if (status === "COMPLETED" && customer && dueAmt.greaterThan(0)) {
       const limit = new Prisma.Decimal(customer.creditLimit ?? 0);
       const nextDue = new Prisma.Decimal(customer.creditDue ?? 0).plus(dueAmt);
-      if (limit.greaterThan(0) && nextDue.greaterThan(limit)) {
+      if (limit.lessThanOrEqualTo(0) || nextDue.greaterThan(limit)) {
         throw Object.assign(new Error("Customer credit limit exceeded"), { code: "CREDIT_LIMIT" });
       }
     }
-
-    const status = dueAmt.greaterThan(0) ? "COMPLETED" : saleStatusFromPayments(payRows, totals.total);
     const year = new Date(input.ctx.businessDate).getFullYear();
-    const invoiceNumber = await nextInvoiceNumber(tx, {
-      tenantId,
-      branchId: branch.id,
-      fiscalYear: year,
-    });
-
-    const sale = await tx.sale.create({
-      data: {
+    const saleData = {
         tenantId,
         branchId: branch.id,
         locationId: branch.locationId,
@@ -187,16 +243,15 @@ export async function createSale(input: {
         channel: input.channel ?? "STORE",
         customerId: customer?.id,
         status,
-        invoiceNumber,
         businessDate: new Date(input.ctx.businessDate),
         currency: business?.currency ?? "BDT",
         subtotal: toMoneyString(totals.subtotal),
         discount: toMoneyString(totals.discount),
         tax: toMoneyString(totals.tax),
         total: toMoneyString(totals.total),
-        paid: toMoneyString(recordedPaid),
-        due: toMoneyString(dueAmt),
-        change: toMoneyString(Prisma.Decimal.max(recordedPaid.minus(totals.total), 0)),
+        paid: toMoneyString(capturedPaid),
+        due: toMoneyString(status === "COMPLETED" ? dueAmt : totals.total.minus(capturedPaid)),
+        change: toMoneyString(Prisma.Decimal.max(capturedPaid.minus(totals.total), 0)),
         clientTransactionId: input.clientTransactionId,
         deviceId: input.deviceId,
         deviceSequence: input.deviceSequence ?? 1,
@@ -207,12 +262,14 @@ export async function createSale(input: {
           vatId: business?.vatId,
           address: business?.address,
           phone: business?.phone,
+          email: business?.email,
+          logoUrl: business?.logoUrl,
         },
         customerSnapshot: customer
-          ? { name: customer.name, phone: customer.phoneCanonical }
+          ? { name: customer.name, phone: customer.phoneCanonical, email: customer.email, address: customer.address, taxId: customer.taxId }
           : Prisma.JsonNull,
         taxRegistrationSnapshot: { vatId: business?.vatId, rateNote: "VAT by line" },
-        currencySnapshot: { code: "BDT", rate: "1" },
+        currencySnapshot: { code: business?.currency ?? "BDT", rate: "1" },
         items: {
           create: computed.map((c) => ({
             variantId: c.variant.id,
@@ -238,40 +295,56 @@ export async function createSale(input: {
             amount: p.amount,
           })),
         },
-      },
-      include: { items: true, payments: true },
-    });
+    } as const;
+
+    let sale: Awaited<ReturnType<typeof tx.sale.create>> | null = null;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const invoiceNumber = await nextInvoiceNumber(tx, {
+        tenantId,
+        branchId: branch.id,
+        fiscalYear: year,
+      });
+      try {
+        sale = await tx.sale.create({
+          data: { ...saleData, invoiceNumber },
+          include: { items: true, payments: true },
+        });
+        break;
+      } catch (e) {
+        const target = e instanceof Prisma.PrismaClientKnownRequestError ? e.meta?.target : undefined;
+        const invoiceClash = Array.isArray(target)
+          ? target.includes("invoiceNumber")
+          : String(target ?? "").includes("invoiceNumber");
+        if (
+          e instanceof Prisma.PrismaClientKnownRequestError &&
+          e.code === "P2002" &&
+          invoiceClash &&
+          attempt < 11
+        ) {
+          continue;
+        }
+        throw e;
+      }
+    }
+    if (!sale) throw Object.assign(new Error("Could not allocate invoice number"), { code: "VALIDATION" });
 
     if (status === "COMPLETED") {
       for (const c of computed) {
-        if (branch.negativeStockPolicy === "BLOCK") {
-          const locked = await tx.stock.updateMany({
-            where: {
-              tenantId,
-              locationId: branch.locationId,
-              variantId: c.variant.id,
-              quantity: { gte: c.qty },
-            },
-            data: { quantity: { decrement: c.qty } },
-          });
-          if (locked.count !== 1) {
-            throw new InsufficientStockError(`Not enough stock for ${c.variant.sku}`);
-          }
-        } else {
-          await tx.stock.updateMany({
-            where: { tenantId, locationId: branch.locationId, variantId: c.variant.id },
-            data: { quantity: { decrement: c.qty } },
-          });
-        }
-        await tx.stockMovement.create({
-          data: {
-            tenantId,
-            locationId: branch.locationId,
-            variantId: c.variant.id,
-            type: "SALE",
-            quantity: c.qty.negated(),
-            saleId: sale.id,
-          },
+        if (!c.variant.product.trackInventory) continue;
+        const blockNegative =
+          branch.negativeStockPolicy === "BLOCK" && !c.variant.product.allowNegativeStock;
+        await applyStockChange(tx, {
+          tenantId,
+          locationId: branch.locationId,
+          variantId: c.variant.id,
+          bucket: "AVAILABLE",
+          delta: c.qty.negated(),
+          type: "SALE",
+          saleId: sale.id,
+          referenceType: "Sale",
+          referenceId: sale.id,
+          createdById: input.ctx.userId,
+          allowNegative: !blockNegative,
         });
       }
     }
@@ -289,7 +362,7 @@ export async function createSale(input: {
         tenantId,
         saleId: sale.id,
         status: "PENDING",
-        payload: { saleId: sale.id, invoiceNumber, channel: sale.channel },
+        payload: { saleId: sale.id, invoiceNumber: sale.invoiceNumber, channel: sale.channel },
       },
     });
     await tx.accountingEvent.create({
@@ -307,11 +380,11 @@ export async function createSale(input: {
         type: "SALE_CREATED",
         eventType: "SALE_CREATED",
         aggregateId: sale.id,
-        payload: { saleId: sale.id, invoiceNumber, correlationId: input.correlationId },
+        payload: { saleId: sale.id, invoiceNumber: sale.invoiceNumber, correlationId: input.correlationId },
         correlationId: input.correlationId,
       },
     });
-    if (customer && dueAmt.greaterThan(0)) {
+    if (customer && status === "COMPLETED" && dueAmt.greaterThan(0)) {
       await tx.customer.update({
         where: { id: customer.id },
         data: { creditDue: { increment: dueAmt } },
@@ -319,7 +392,7 @@ export async function createSale(input: {
     }
 
     if (customer && status === "COMPLETED") {
-      const pts = Math.floor(Number(totals.total) / 100);
+      const pts = Math.floor(Number(toMoneyString(totals.total, 2)) / 100);
       if (pts > 0) {
         await tx.loyaltyTransaction.create({
           data: {
@@ -328,7 +401,7 @@ export async function createSale(input: {
             type: "EARN",
             points: pts,
             saleId: sale.id,
-            notes: invoiceNumber,
+            notes: sale.invoiceNumber,
           },
         });
         await tx.customer.update({
@@ -346,7 +419,7 @@ export async function createSale(input: {
         action: "sale.create",
         entityType: "Sale",
         entityId: sale.id,
-        after: { invoiceNumber, total: sale.total, status, due: dueAmt },
+        after: { invoiceNumber: sale.invoiceNumber, total: sale.total, status, due: dueAmt },
         correlationId: input.correlationId,
       },
     });
@@ -368,16 +441,26 @@ export async function createSale(input: {
     }
 
     if (input.idempotencyKey) {
-      await tx.idempotencyRecord.create({
-        data: {
-          tenantId,
-          key: input.idempotencyKey,
-          method: "POST",
-          path: "/sales",
-          status: 201,
-          body: sale as unknown as Prisma.InputJsonValue,
-        },
-      });
+      try {
+        await tx.idempotencyRecord.create({
+          data: {
+            tenantId,
+            key: input.idempotencyKey,
+            method: "POST",
+            path: "/sales",
+            status: 201,
+            body: sale as unknown as Prisma.InputJsonValue,
+          },
+        });
+      } catch (e) {
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+          const existing = await tx.idempotencyRecord.findUnique({
+            where: { tenantId_key: { tenantId, key: input.idempotencyKey } },
+          });
+          if (existing) return { replay: true as const, body: existing.body };
+        }
+        throw e;
+      }
     }
 
     return { replay: false as const, saleId: sale.id };

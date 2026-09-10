@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "./prisma.js";
 import { requireTenantId } from "./scope.js";
 import type { RequestContext } from "../types.js";
@@ -53,6 +54,59 @@ export async function nextDocNumber(
     data: { nextNumber: { increment: 1 } },
   });
   return `${existing.prefix}${String(used).padStart(existing.padding, "0")}`;
+}
+
+export async function nextDocNumberTx(
+  tx: Prisma.TransactionClient,
+  tenantIdValue: string,
+  branchId: string,
+  documentType: string,
+  prefix: string,
+) {
+  const year = new Date().getFullYear();
+  const rows = await tx.$queryRaw<Array<{ nextNumber: number; prefix: string; padding: number }>>`
+    UPDATE "DocumentNumberSequence"
+    SET "nextNumber" = "nextNumber" + 1
+    WHERE "tenantId" = ${tenantIdValue}
+      AND "branchId" = ${branchId}
+      AND "documentType" = ${documentType}
+      AND "fiscalYear" = ${year}
+    RETURNING "nextNumber", "prefix", "padding"
+  `;
+  let seq = rows[0];
+  if (!seq) {
+    const built = `${prefix}-${year}-`;
+    try {
+      await tx.documentNumberSequence.create({
+        data: {
+          tenantId: tenantIdValue,
+          branchId,
+          documentType,
+          fiscalYear: year,
+          prefix: built,
+          padding: 6,
+          nextNumber: 1,
+        },
+      });
+    } catch {
+      /* unique race */
+    }
+    const retry = await tx.$queryRaw<Array<{ nextNumber: number; prefix: string; padding: number }>>`
+      UPDATE "DocumentNumberSequence"
+      SET "nextNumber" = "nextNumber" + 1
+      WHERE "tenantId" = ${tenantIdValue}
+        AND "branchId" = ${branchId}
+        AND "documentType" = ${documentType}
+        AND "fiscalYear" = ${year}
+      RETURNING "nextNumber", "prefix", "padding"
+    `;
+    seq = retry[0];
+    if (!seq) {
+      return `${built}${String(1).padStart(6, "0")}`;
+    }
+  }
+  const used = seq.nextNumber - 1;
+  return `${seq.prefix}${String(used).padStart(seq.padding, "0")}`;
 }
 
 export function parseCsv(text: string) {

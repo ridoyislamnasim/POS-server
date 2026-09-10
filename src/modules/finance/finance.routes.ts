@@ -1,12 +1,14 @@
 import { Router, type Request } from "express";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../lib/prisma.js";
-import { fail, ok } from "../../lib/envelope.js";
+import { fail, ok, okList } from "../../lib/envelope.js";
 import { requireAuth, requirePermission, requireTenant } from "../../middleware/auth.js";
 import { writeAudit } from "../../lib/audit.js";
 import { branchScope, money, num, tenantId } from "../../lib/erp.js";
 import { assertBranch } from "../../lib/scope.js";
 import type { AuthedRequest } from "../../types.js";
+import { acceptEnum, acceptId, dateRange, ilike, parseListQuery, scopedBranchId, withPagination } from "../../lib/list-query.js";
+import { enqueueOutbox } from "../outbox/enqueue.js";
 
 export const financeRouter = Router();
 financeRouter.use(requireAuth, requireTenant);
@@ -36,13 +38,35 @@ financeRouter.post("/expense-categories", requirePermission("expense.manage"), a
 
 financeRouter.get("/expenses", requirePermission("expense.view"), async (req, res) => {
   const ctx = ctxOf(req);
-  const rows = await prisma.expense.findMany({
-    where: { tenantId: tenantId(ctx), ...branchScope(ctx) },
-    include: { category: true, branch: { select: { name: true } } },
-    orderBy: { createdAt: "desc" },
-    take: 200,
+  const list = parseListQuery(req.query, { sortable: ["createdAt", "amount", "vendor", "status"], defaultSort: "createdAt", defaultOrder: "desc" });
+  const status = acceptEnum(req.query.status, ["DRAFT", "POSTED", "VOIDED"] as const);
+  const method = typeof req.query.method === "string" && req.query.method && req.query.method !== "ALL" ? String(req.query.method).slice(0, 32) : undefined;
+  const categoryId = acceptId(req.query.categoryId);
+  const branchId = scopedBranchId(ctx, req.query.branchId);
+  const dates = dateRange(list.dateFrom, list.dateTo);
+  const q = list.search;
+  const where = {
+    tenantId: tenantId(ctx),
+    ...branchScope(ctx),
+    ...(branchId ? { branchId } : {}),
+    ...(status ? { status } : {}),
+    ...(method ? { method } : {}),
+    ...(categoryId ? { categoryId } : {}),
+    ...(dates ? { businessDate: dates } : {}),
+    ...(q ? { OR: [{ vendor: ilike(q) }, { notes: ilike(q) }, { category: { name: ilike(q) } }] } : {}),
+  };
+  const { rows, pagination } = await withPagination(list, {
+    find: (skip, take) =>
+      prisma.expense.findMany({
+        where,
+        include: { category: { select: { id: true, name: true } }, branch: { select: { name: true } } },
+        orderBy: list.sortBy === "amount" || list.sortBy === "vendor" || list.sortBy === "status" ? { [list.sortBy]: list.sortOrder } : { createdAt: list.sortOrder },
+        skip,
+        take,
+      }),
+    count: () => prisma.expense.count({ where }),
   });
-  return ok(res, rows);
+  return okList(res, rows, pagination);
 });
 
 financeRouter.post("/expenses", requirePermission("expense.manage"), async (req, res) => {
@@ -67,7 +91,37 @@ financeRouter.post("/expenses", requirePermission("expense.manage"), async (req,
     include: { category: true },
   });
   await writeAudit({ ctx, action: "expense.create", entityType: "Expense", entityId: row.id, after: row });
+  await enqueueOutbox(prisma, {
+    tenantId: tenantId(ctx),
+    type: "EXPENSE_CREATED",
+    aggregateId: row.id,
+    payload: { branchId: row.branchId, amount: row.amount, entityType: "Expense", entityId: row.id },
+  });
   return ok(res, row, undefined, 201);
+});
+
+financeRouter.patch("/expenses/:id", requirePermission("expense.manage"), async (req, res) => {
+  const ctx = ctxOf(req);
+  const existing = await prisma.expense.findFirst({
+    where: { id: String(req.params.id), tenantId: tenantId(ctx) },
+  });
+  if (!existing) return fail(res, "NOT_FOUND", "Expense not found", 404);
+  if (req.body?.branchId) assertBranch(ctx, req.body.branchId);
+  const row = await prisma.expense.update({
+    where: { id: existing.id },
+    data: {
+      categoryId: req.body?.categoryId,
+      amount: req.body?.amount != null ? String(req.body.amount) : undefined,
+      tax: req.body?.tax != null ? String(req.body.tax) : undefined,
+      method: req.body?.method,
+      vendor: req.body?.vendor,
+      notes: req.body?.notes,
+      branchId: req.body?.branchId === "" ? null : req.body?.branchId,
+    },
+    include: { category: true, branch: { select: { name: true } } },
+  });
+  await writeAudit({ ctx, action: "expense.update", entityType: "Expense", entityId: row.id });
+  return ok(res, row);
 });
 
 financeRouter.delete("/expenses/:id", requirePermission("expense.manage"), async (req, res) => {
@@ -83,13 +137,29 @@ financeRouter.delete("/expenses/:id", requirePermission("expense.manage"), async
 
 financeRouter.get("/income", requirePermission("income.view"), async (req, res) => {
   const ctx = ctxOf(req);
-  const rows = await prisma.income.findMany({
-    where: { tenantId: tenantId(ctx), ...branchScope(ctx) },
-    include: { branch: { select: { name: true } } },
-    orderBy: { createdAt: "desc" },
-    take: 200,
+  const list = parseListQuery(req.query, { sortable: ["createdAt", "amount", "category"], defaultSort: "createdAt", defaultOrder: "desc" });
+  const method = typeof req.query.method === "string" && req.query.method && req.query.method !== "ALL" ? String(req.query.method).slice(0, 32) : undefined;
+  const dates = dateRange(list.dateFrom, list.dateTo);
+  const q = list.search;
+  const where = {
+    tenantId: tenantId(ctx),
+    ...branchScope(ctx),
+    ...(method ? { method } : {}),
+    ...(dates ? { businessDate: dates } : {}),
+    ...(q ? { OR: [{ category: ilike(q) }, { notes: ilike(q) }] } : {}),
+  };
+  const { rows, pagination } = await withPagination(list, {
+    find: (skip, take) =>
+      prisma.income.findMany({
+        where,
+        include: { branch: { select: { name: true } } },
+        orderBy: list.sortBy === "amount" || list.sortBy === "category" ? { [list.sortBy]: list.sortOrder } : { createdAt: list.sortOrder },
+        skip,
+        take,
+      }),
+    count: () => prisma.income.count({ where }),
   });
-  return ok(res, rows);
+  return okList(res, rows, pagination);
 });
 
 financeRouter.post("/income", requirePermission("income.manage"), async (req, res) => {
@@ -112,6 +182,28 @@ financeRouter.post("/income", requirePermission("income.manage"), async (req, re
   return ok(res, row, undefined, 201);
 });
 
+financeRouter.patch("/income/:id", requirePermission("income.manage"), async (req, res) => {
+  const ctx = ctxOf(req);
+  const existing = await prisma.income.findFirst({
+    where: { id: String(req.params.id), tenantId: tenantId(ctx) },
+  });
+  if (!existing) return fail(res, "NOT_FOUND", "Income not found", 404);
+  if (req.body?.branchId) assertBranch(ctx, req.body.branchId);
+  const row = await prisma.income.update({
+    where: { id: existing.id },
+    data: {
+      category: req.body?.category,
+      amount: req.body?.amount != null ? String(req.body.amount) : undefined,
+      method: req.body?.method,
+      notes: req.body?.notes,
+      branchId: req.body?.branchId === "" ? null : req.body?.branchId,
+    },
+    include: { branch: { select: { name: true } } },
+  });
+  await writeAudit({ ctx, action: "income.update", entityType: "Income", entityId: row.id });
+  return ok(res, row);
+});
+
 financeRouter.delete("/income/:id", requirePermission("income.manage"), async (req, res) => {
   const ctx = ctxOf(req);
   const existing = await prisma.income.findFirst({
@@ -125,18 +217,43 @@ financeRouter.delete("/income/:id", requirePermission("income.manage"), async (r
 
 financeRouter.get("/payments", requirePermission("payment.view"), async (req, res) => {
   const ctx = ctxOf(req);
-  const partyType = req.query.partyType ? String(req.query.partyType) : undefined;
-  const partyId = req.query.partyId ? String(req.query.partyId) : undefined;
-  const rows = await prisma.ledgerPayment.findMany({
-    where: {
-      tenantId: tenantId(ctx),
-      ...(partyType ? { partyType: partyType as "CUSTOMER" | "SUPPLIER" | "OTHER" } : {}),
-      ...(partyId ? { partyId } : {}),
-    },
-    orderBy: { createdAt: "desc" },
-    take: 200,
+  const list = parseListQuery(req.query, { sortable: ["createdAt", "amount", "direction"], defaultSort: "createdAt", defaultOrder: "desc" });
+  const partyType = acceptEnum(req.query.partyType, ["CUSTOMER", "SUPPLIER", "OTHER"] as const);
+  const partyId = acceptId(req.query.partyId);
+  const method = typeof req.query.method === "string" && req.query.method && req.query.method !== "ALL" ? String(req.query.method).slice(0, 32) : undefined;
+  const dates = dateRange(list.dateFrom, list.dateTo);
+  const q = list.search;
+  const where = {
+    tenantId: tenantId(ctx),
+    ...(partyType ? { partyType } : {}),
+    ...(partyId ? { partyId } : {}),
+    ...(method ? { method } : {}),
+    ...(dates ? { businessDate: dates } : {}),
+    ...(q ? { OR: [{ reference: ilike(q) }, { notes: ilike(q) }, { method: ilike(q) }] } : {}),
+  };
+  const { rows, pagination } = await withPagination(list, {
+    find: (skip, take) =>
+      prisma.ledgerPayment.findMany({
+        where,
+        select: {
+          id: true,
+          partyType: true,
+          partyId: true,
+          direction: true,
+          amount: true,
+          method: true,
+          reference: true,
+          notes: true,
+          businessDate: true,
+          createdAt: true,
+        },
+        orderBy: list.sortBy === "amount" || list.sortBy === "direction" ? { [list.sortBy]: list.sortOrder } : { createdAt: list.sortOrder },
+        skip,
+        take,
+      }),
+    count: () => prisma.ledgerPayment.count({ where }),
   });
-  return ok(res, rows);
+  return okList(res, rows, pagination);
 });
 
 financeRouter.post("/payments", requirePermission("payment.manage"), async (req, res) => {
@@ -146,10 +263,36 @@ financeRouter.post("/payments", requirePermission("payment.manage"), async (req,
     return fail(res, "VALIDATION", "partyType, partyId, direction, amount required");
   }
   const amt = new Prisma.Decimal(String(amount));
+  if (amt.lessThanOrEqualTo(0)) return fail(res, "VALIDATION", "amount must be greater than zero");
+  if (branchId) {
+    try {
+      assertBranch(ctx, String(branchId));
+    } catch {
+      return fail(res, "FORBIDDEN", "Branch not allowed", 403);
+    }
+  }
+  const tid = tenantId(ctx);
+  try {
   const row = await prisma.$transaction(async (tx) => {
+    if (partyType === "CUSTOMER") {
+      const customer = await tx.customer.findFirst({ where: { id: partyId, tenantId: tid } });
+      if (!customer) throw Object.assign(new Error("Customer not found"), { code: "NOT_FOUND" });
+    }
+    if (partyType === "SUPPLIER") {
+      const supplier = await tx.supplier.findFirst({ where: { id: partyId, tenantId: tid } });
+      if (!supplier) throw Object.assign(new Error("Supplier not found"), { code: "NOT_FOUND" });
+    }
+    if (saleId) {
+      const sale = await tx.sale.findFirst({ where: { id: saleId, tenantId: tid } });
+      if (!sale) throw Object.assign(new Error("Sale not found"), { code: "NOT_FOUND" });
+    }
+    if (purchaseId) {
+      const purchase = await tx.purchase.findFirst({ where: { id: purchaseId, tenantId: tid } });
+      if (!purchase) throw Object.assign(new Error("Purchase not found"), { code: "NOT_FOUND" });
+    }
     const pay = await tx.ledgerPayment.create({
       data: {
-        tenantId: tenantId(ctx),
+        tenantId: tid,
         branchId: branchId || null,
         partyType,
         partyId,
@@ -165,18 +308,33 @@ financeRouter.post("/payments", requirePermission("payment.manage"), async (req,
       },
     });
     if (partyType === "CUSTOMER" && direction === "IN") {
+      const customer = await tx.customer.findFirst({ where: { id: partyId, tenantId: tid } });
+      if (!customer) throw Object.assign(new Error("Customer not found"), { code: "NOT_FOUND" });
+      if (saleId) {
+        const sale = await tx.sale.findFirst({ where: { id: saleId, tenantId: tid } });
+        if (sale) {
+          const apply = Prisma.Decimal.min(amt, new Prisma.Decimal(sale.due));
+          const paid = new Prisma.Decimal(sale.paid).plus(apply);
+          const due = Prisma.Decimal.max(new Prisma.Decimal(sale.due).minus(apply), 0);
+          await tx.sale.update({ where: { id: sale.id }, data: { paid, due } });
+        }
+      }
+      const nextDue = Prisma.Decimal.max(new Prisma.Decimal(customer.creditDue).minus(amt), 0);
       await tx.customer.update({
-        where: { id: partyId },
-        data: { creditDue: { decrement: amt } },
+        where: { id: customer.id },
+        data: { creditDue: nextDue },
       });
     }
     if (partyType === "SUPPLIER" && direction === "OUT") {
+      const supplier = await tx.supplier.findFirst({ where: { id: partyId, tenantId: tid } });
+      if (!supplier) throw Object.assign(new Error("Supplier not found"), { code: "NOT_FOUND" });
+      const nextDue = Prisma.Decimal.max(new Prisma.Decimal(supplier.creditDue).minus(amt), 0);
       await tx.supplier.update({
-        where: { id: partyId },
-        data: { creditDue: { decrement: amt } },
+        where: { id: supplier.id },
+        data: { creditDue: nextDue },
       });
       if (purchaseId) {
-        const p = await tx.purchase.findFirst({ where: { id: purchaseId, tenantId: tenantId(ctx) } });
+        const p = await tx.purchase.findFirst({ where: { id: purchaseId, tenantId: tid } });
         if (p) {
           const paid = new Prisma.Decimal(p.paid).plus(amt);
           const due = Prisma.Decimal.max(new Prisma.Decimal(p.total).minus(paid), 0);
@@ -184,30 +342,69 @@ financeRouter.post("/payments", requirePermission("payment.manage"), async (req,
         }
       }
     }
+    if (direction === "IN") {
+      await enqueueOutbox(tx, {
+        tenantId: tid,
+        type: "PAYMENT_RECEIVED",
+        aggregateId: pay.id,
+        payload: { branchId: branchId || null, amount: String(amt), partyType, entityType: "LedgerPayment", entityId: pay.id },
+      });
+    }
     return pay;
   });
   await writeAudit({ ctx, action: "payment.create", entityType: "LedgerPayment", entityId: row.id });
   return ok(res, row, undefined, 201);
+  } catch (e) {
+    const err = e as Error & { code?: string };
+    if (err.code === "NOT_FOUND") return fail(res, "NOT_FOUND", err.message, 404);
+    throw e;
+  }
 });
 
 financeRouter.get("/customer-dues", requirePermission("finance.view"), async (req, res) => {
   const ctx = ctxOf(req);
-  const rows = await prisma.customer.findMany({
-    where: { tenantId: tenantId(ctx), creditDue: { gt: 0 } },
-    orderBy: { creditDue: "desc" },
-    take: 200,
+  const list = parseListQuery(req.query, { sortable: ["creditDue", "name"], defaultSort: "creditDue", defaultOrder: "desc" });
+  const q = list.search;
+  const where = {
+    tenantId: tenantId(ctx),
+    creditDue: { gt: 0 },
+    ...(q ? { OR: [{ name: ilike(q) }, { phone: { contains: q } }] } : {}),
+  };
+  const { rows, pagination } = await withPagination(list, {
+    find: (skip, take) =>
+      prisma.customer.findMany({
+        where,
+        select: { id: true, name: true, phone: true, creditDue: true, creditLimit: true },
+        orderBy: { [list.sortBy]: list.sortOrder },
+        skip,
+        take,
+      }),
+    count: () => prisma.customer.count({ where }),
   });
-  return ok(res, rows);
+  return okList(res, rows, pagination);
 });
 
 financeRouter.get("/supplier-dues", requirePermission("finance.view"), async (req, res) => {
   const ctx = ctxOf(req);
-  const rows = await prisma.supplier.findMany({
-    where: { tenantId: tenantId(ctx), creditDue: { gt: 0 } },
-    orderBy: { creditDue: "desc" },
-    take: 200,
+  const list = parseListQuery(req.query, { sortable: ["creditDue", "name"], defaultSort: "creditDue", defaultOrder: "desc" });
+  const q = list.search;
+  const where = {
+    tenantId: tenantId(ctx),
+    creditDue: { gt: 0 },
+    ...(q ? { OR: [{ name: ilike(q) }, { phone: { contains: q } }] } : {}),
+  };
+  const { rows, pagination } = await withPagination(list, {
+    find: (skip, take) =>
+      prisma.supplier.findMany({
+        where,
+        select: { id: true, name: true, phone: true, creditDue: true },
+        orderBy: { [list.sortBy]: list.sortOrder },
+        skip,
+        take,
+      }),
+    count: () => prisma.supplier.count({ where }),
   });
-  return ok(res, rows);
+  return okList(res, rows, pagination);
 });
 
 financeRouter.get("/cash-flow", requirePermission("finance.view"), async (req, res) => {
@@ -266,7 +463,7 @@ financeRouter.get("/profit-loss", requirePermission("report.finance"), async (re
   });
   const variantIds = [...new Set(sales.flatMap((s) => s.items.map((i) => i.variantId)))];
   const costs = await prisma.productVariant.findMany({
-    where: { id: { in: variantIds } },
+    where: { tenantId: tid, id: { in: variantIds } },
     select: { id: true, cost: true },
   });
   const costMap = new Map(costs.map((c) => [c.id, num(c.cost)]));
@@ -299,13 +496,27 @@ financeRouter.get("/profit-loss", requirePermission("report.finance"), async (re
 
 financeRouter.get("/daily-closing", requirePermission("finance.view"), async (req, res) => {
   const ctx = ctxOf(req);
-  const rows = await prisma.dailyClosing.findMany({
-    where: { tenantId: tenantId(ctx), ...branchScope(ctx) },
-    include: { branch: { select: { name: true } } },
-    orderBy: { businessDate: "desc" },
-    take: 60,
+  const list = parseListQuery(req.query, { sortable: ["businessDate", "createdAt"], defaultSort: "businessDate", defaultOrder: "desc" });
+  const branchId = scopedBranchId(ctx, req.query.branchId);
+  const dates = dateRange(list.dateFrom, list.dateTo);
+  const where = {
+    tenantId: tenantId(ctx),
+    ...branchScope(ctx),
+    ...(branchId ? { branchId } : {}),
+    ...(dates ? { businessDate: dates } : {}),
+  };
+  const { rows, pagination } = await withPagination(list, {
+    find: (skip, take) =>
+      prisma.dailyClosing.findMany({
+        where,
+        include: { branch: { select: { name: true } } },
+        orderBy: { businessDate: list.sortOrder },
+        skip,
+        take,
+      }),
+    count: () => prisma.dailyClosing.count({ where }),
   });
-  return ok(res, rows);
+  return okList(res, rows, pagination);
 });
 
 financeRouter.post("/daily-closing", requirePermission("shift.close"), async (req, res) => {
@@ -367,5 +578,19 @@ financeRouter.post("/daily-closing", requirePermission("shift.close"), async (re
     },
     include: { branch: true },
   });
+  if (Number(row.variance) !== 0) {
+    await enqueueOutbox(prisma, {
+      tenantId: tid,
+      type: "CASH_VARIANCE",
+      aggregateId: row.id,
+      payload: {
+        branchId,
+        variance: row.variance,
+        message: `Daily close variance ${row.variance} at ${row.branch.name}.`,
+        entityType: "DailyClosing",
+        entityId: row.id,
+      },
+    });
+  }
   return ok(res, row, undefined, 201);
 });

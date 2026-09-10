@@ -1,5 +1,64 @@
-// Universal product engine. Fashion colour/size are AttributeOptions, not Style tables.
-// variantKey must be unique per product (e.g. colour:red|size:l).
+// Universal product engine. Variant axes are AttributeDefinitions (Colour, Size, Weight, custom…).
+// variantKey must be unique per product (e.g. colour:red|size:l or __default__).
+
+model Category {
+  id             String        @id @default(cuid())
+  tenantId       String
+  tenant         Tenant        @relation(fields: [tenantId], references: [id])
+  name           String
+  slug           String
+  status         ProductStatus @default(ACTIVE)
+  sortOrder      Int           @default(0)
+  subcategories  Subcategory[]
+  products       Product[]
+  createdAt      DateTime      @default(now())
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, name])
+}
+
+model Subcategory {
+  id         String        @id @default(cuid())
+  tenantId   String
+  categoryId String
+  category   Category      @relation(fields: [categoryId], references: [id])
+  name       String
+  slug       String
+  status     ProductStatus @default(ACTIVE)
+  sortOrder  Int           @default(0)
+  products   Product[]
+  createdAt  DateTime      @default(now())
+
+  @@unique([categoryId, slug])
+  @@index([tenantId, categoryId])
+}
+
+model Brand {
+  id        String        @id @default(cuid())
+  tenantId  String
+  tenant    Tenant        @relation(fields: [tenantId], references: [id])
+  name      String
+  status    ProductStatus @default(ACTIVE)
+  products  Product[]
+  createdAt DateTime      @default(now())
+
+  @@unique([tenantId, name])
+}
+
+model Unit {
+  id             String        @id @default(cuid())
+  tenantId       String
+  tenant         Tenant        @relation(fields: [tenantId], references: [id])
+  name           String
+  abbreviation   String
+  status         ProductStatus @default(ACTIVE)
+  sortOrder      Int           @default(0)
+  products       Product[]
+  variants       ProductVariant[]
+  createdAt      DateTime      @default(now())
+
+  @@unique([tenantId, abbreviation])
+}
 
 model AttributeDefinition {
   id              String            @id @default(cuid())
@@ -21,7 +80,7 @@ model AttributeDefinition {
 model AttributeOption {
   id            String                  @id @default(cuid())
   definitionId  String
-  definition    AttributeDefinition     @relation(fields: [definitionId], references: [id])
+  definition    AttributeDefinition     @relation(fields: [definitionId], references: [id], onDelete: Cascade)
   value         String
   label         String
   sortOrder     Int                     @default(0)
@@ -31,49 +90,121 @@ model AttributeOption {
 }
 
 model Product {
-  id            String           @id @default(cuid())
-  tenantId      String
-  tenant        Tenant           @relation(fields: [tenantId], references: [id])
-  type          ProductType      @default(PHYSICAL)
-  status        ProductStatus    @default(ACTIVE)
-  name          String
-  code          String
-  category      String?
-  taxCategoryId String?
-  taxCategory   TaxCategory?     @relation(fields: [taxCategoryId], references: [id])
-  variants      ProductVariant[]
-  createdAt     DateTime         @default(now())
+  id                   String           @id @default(cuid())
+  tenantId             String
+  tenant               Tenant           @relation(fields: [tenantId], references: [id])
+  type                 ProductType      @default(SIMPLE)
+  status               ProductStatus    @default(ACTIVE)
+  name                 String
+  code                 String
+  category             String?
+  categoryId           String?
+  categoryRef          Category?        @relation(fields: [categoryId], references: [id])
+  subcategoryId        String?
+  subcategory          Subcategory?     @relation(fields: [subcategoryId], references: [id])
+  brandId              String?
+  brand                Brand?           @relation(fields: [brandId], references: [id])
+  unitId               String?
+  unit                 Unit?            @relation(fields: [unitId], references: [id])
+  supplierId           String?
+  supplier             Supplier?        @relation(fields: [supplierId], references: [id])
+  taxCategoryId        String?
+  taxCategory          TaxCategory?     @relation(fields: [taxCategoryId], references: [id])
+  description          String?
+  tags                 String?
+  barcode              String?
+  featured             Boolean          @default(false)
+  posSaleEnabled       Boolean          @default(true)
+  onlineSaleEnabled    Boolean          @default(false)
+  trackInventory       Boolean          @default(true)
+  allowNegativeStock   Boolean          @default(false)
+  expiryTracking       Boolean          @default(false)
+  batchTracking        Boolean          @default(false)
+  serialTracking       Boolean          @default(false)
+  sellingPrice         Decimal?         @db.Decimal(19, 4)
+  purchasePrice        Decimal?         @db.Decimal(19, 4)
+  wholesalePrice       Decimal?         @db.Decimal(19, 4)
+  retailPrice          Decimal?         @db.Decimal(19, 4)
+  discount             Decimal          @default(0) @db.Decimal(19, 4)
+  profitMargin         Decimal?         @db.Decimal(7, 4)
+  minStock             Decimal          @default(0) @db.Decimal(19, 4)
+  reorderLevel         Decimal          @default(0) @db.Decimal(19, 4)
+  variants             ProductVariant[]
+  images               ProductImage[]
+  bundleItems          ProductBundleItem[] @relation("BundleProduct")
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @default(now()) @updatedAt
 
   @@unique([tenantId, code])
   @@index([tenantId, name])
+  @@index([tenantId, categoryId])
+  @@index([tenantId, status, name])
+  @@index([tenantId, barcode])
+  @@index([tenantId, supplierId])
+}
+
+model ProductImage {
+  id        String          @id @default(cuid())
+  productId String
+  product   Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId String?
+  variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  url       String
+  alt       String?
+  isPrimary Boolean         @default(false)
+  sortOrder Int             @default(0)
+
+  @@index([productId, sortOrder])
+}
+
+model ProductBundleItem {
+  id              String         @id @default(cuid())
+  bundleProductId String
+  bundleProduct   Product        @relation("BundleProduct", fields: [bundleProductId], references: [id], onDelete: Cascade)
+  variantId       String
+  variant         ProductVariant @relation(fields: [variantId], references: [id])
+  qty             Decimal        @db.Decimal(19, 4)
+
+  @@unique([bundleProductId, variantId])
 }
 
 model ProductVariant {
-  id           String                  @id @default(cuid())
-  tenantId     String
-  productId    String
-  product      Product                 @relation(fields: [productId], references: [id])
-  sku          String
-  variantKey   String
-  status       ProductStatus           @default(ACTIVE)
-  trackingType TrackingType            @default(NONE)
-  price        Decimal                 @db.Decimal(19, 4)
-  cost         Decimal                 @default(0) @db.Decimal(19, 4)
-  attributes   VariantAttributeValue[]
-  barcodes           Barcode[]
-  stock              Stock[]
+  id             String                  @id @default(cuid())
+  tenantId       String
+  productId      String
+  product        Product                 @relation(fields: [productId], references: [id], onDelete: Cascade)
+  sku            String
+  variantKey     String
+  status         ProductStatus           @default(ACTIVE)
+  trackingType   TrackingType            @default(NONE)
+  price          Decimal                 @db.Decimal(19, 4)
+  cost           Decimal                 @default(0) @db.Decimal(19, 4)
+  discount       Decimal                 @default(0) @db.Decimal(19, 4)
+  wholesalePrice Decimal?                @db.Decimal(19, 4)
+  retailPrice    Decimal?                @db.Decimal(19, 4)
+  minStock       Decimal                 @default(0) @db.Decimal(19, 4)
+  weight         Decimal?                @db.Decimal(19, 4)
+  imageUrl       String?
+  unitId         String?
+  unit           Unit?                   @relation(fields: [unitId], references: [id])
+  attributes     VariantAttributeValue[]
+  barcodes       Barcode[]
+  stock          Stock[]
+  images         ProductImage[]
   purchaseItems      PurchaseItem[]
   purchaseOrderItems PurchaseOrderItem[]
   salesOrderItems    SalesOrderItem[]
+  bundleUsages       ProductBundleItem[]
 
   @@unique([productId, variantKey])
   @@unique([tenantId, sku])
+  @@index([tenantId, status, sku])
 }
 
 model VariantAttributeValue {
   variantId String
   optionId  String
-  variant   ProductVariant  @relation(fields: [variantId], references: [id])
+  variant   ProductVariant  @relation(fields: [variantId], references: [id], onDelete: Cascade)
   option    AttributeOption @relation(fields: [optionId], references: [id])
 
   @@id([variantId, optionId])
@@ -83,7 +214,7 @@ model Barcode {
   id        String         @id @default(cuid())
   tenantId  String
   variantId String
-  variant   ProductVariant @relation(fields: [variantId], references: [id])
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
   code      String
   kind      String         @default("CODE128")
   primary   Boolean        @default(false)

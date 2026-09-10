@@ -1,30 +1,54 @@
 import { Router } from "express";
 import { prisma } from "../../lib/prisma.js";
-import { fail, ok } from "../../lib/envelope.js";
+import { fail, ok, okList } from "../../lib/envelope.js";
 import { requireAuth, requirePermission, requireTenant } from "../../middleware/auth.js";
 import { ForbiddenError, assertBranch } from "../../lib/scope.js";
 import { writeAudit } from "../../lib/audit.js";
 import type { AuthedRequest } from "../../types.js";
+import { acceptEnum, createdAtRange, ilike, parseListQuery, withPagination } from "../../lib/list-query.js";
+import { enqueueOutbox } from "../outbox/enqueue.js";
 
 export const shiftsRouter = Router();
 shiftsRouter.use(requireAuth, requireTenant);
 
 shiftsRouter.get("/", requirePermission("shift.manage"), async (req, res) => {
   const ctx = (req as AuthedRequest).ctx;
-  const rows = await prisma.shift.findMany({
-    where: {
-      tenantId: ctx.tenantId!,
-      ...(ctx.allBranches || ctx.isPlatform ? {} : { branchId: { in: ctx.branchIds } }),
-    },
-    include: {
-      branch: { select: { name: true } },
-      register: { select: { name: true } },
-      cashier: { select: { id: true, name: true, email: true } },
-    },
-    orderBy: { openedAt: "desc" },
-    take: 100,
+  const list = parseListQuery(req.query, { sortable: ["openedAt", "status"], defaultSort: "openedAt", defaultOrder: "desc" });
+  const status = acceptEnum(req.query.status, ["OPEN", "CLOSED"] as const);
+  const dates = createdAtRange(list);
+  const q = list.search;
+  const where = {
+    tenantId: ctx.tenantId!,
+    ...(ctx.allBranches || ctx.isPlatform ? {} : { branchId: { in: ctx.branchIds } }),
+    ...(status ? { status } : {}),
+    ...(dates ? { openedAt: dates } : {}),
+    ...(q
+      ? {
+          OR: [
+            { cashier: { name: ilike(q) } },
+            { cashier: { email: ilike(q) } },
+            { branch: { name: ilike(q) } },
+            { register: { name: ilike(q) } },
+          ],
+        }
+      : {}),
+  };
+  const { rows, pagination } = await withPagination(list, {
+    find: (skip, take) =>
+      prisma.shift.findMany({
+        where,
+        include: {
+          branch: { select: { name: true } },
+          register: { select: { name: true } },
+          cashier: { select: { id: true, name: true, email: true } },
+        },
+        orderBy: { openedAt: list.sortOrder },
+        skip,
+        take,
+      }),
+    count: () => prisma.shift.count({ where }),
   });
-  return ok(res, rows);
+  return okList(res, rows, pagination);
 });
 
 shiftsRouter.get("/current", async (req, res) => {
@@ -93,7 +117,7 @@ shiftsRouter.post("/:id/close", requirePermission("shift.close"), async (req, re
     where: { id: String(req.params.id) },
     include: { sales: { include: { payments: true } } },
   });
-  if (!shift || shift.tenantId !== ctx.tenantId) return fail(res, "FORBIDDEN", "Forbidden", 403);
+  if (!shift || (shift.tenantId !== ctx.tenantId && !ctx.isPlatform)) return fail(res, "FORBIDDEN", "Forbidden", 403);
   if (shift.cashierId !== ctx.userId && !ctx.allBranches && !ctx.isPlatform) {
     return fail(res, "FORBIDDEN", "Forbidden", 403);
   }
@@ -129,6 +153,22 @@ shiftsRouter.post("/:id/close", requirePermission("shift.close"), async (req, re
     after: { expected, closing },
     correlationId: (req as AuthedRequest).correlationId,
   });
+  const variance = closing - expected;
+  if (Math.abs(variance) >= 1) {
+    await enqueueOutbox(prisma, {
+      tenantId: ctx.tenantId!,
+      type: "SHIFT_ALERT",
+      aggregateId: shift.id,
+      payload: {
+        branchId: shift.branchId,
+        cashierUserId: shift.cashierId,
+        variance,
+        message: `Shift close variance ${variance.toFixed(2)}.`,
+        entityType: "Shift",
+        entityId: shift.id,
+      },
+    });
+  }
   return ok(res, {
     ...updated,
     report: {

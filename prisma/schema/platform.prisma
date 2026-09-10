@@ -23,7 +23,11 @@ model OutboxEvent {
   payload       Json
   correlationId String
   processedAt   DateTime?
+  attempts      Int       @default(0)
+  lastError     String?
   createdAt     DateTime  @default(now())
+
+  @@index([processedAt, createdAt])
 }
 
 model AuditLog {

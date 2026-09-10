@@ -1,10 +1,11 @@
 import { Router, type Request } from "express";
 import { prisma } from "../../lib/prisma.js";
-import { fail, ok } from "../../lib/envelope.js";
+import { fail, ok, okList } from "../../lib/envelope.js";
 import { requireAuth, requirePermission, requireTenant } from "../../middleware/auth.js";
 import { planLimits, tenantId } from "../../lib/erp.js";
 import { writeAudit } from "../../lib/audit.js";
 import type { AuthedRequest } from "../../types.js";
+import { ilike, parseListQuery, withPagination } from "../../lib/list-query.js";
 
 export const orgRouter = Router();
 orgRouter.use(requireAuth, requireTenant);
@@ -46,12 +47,24 @@ orgRouter.patch("/business", requirePermission("tenant.manage"), async (req, res
 
 orgRouter.get("/branches", requirePermission("branch.manage"), async (req, res) => {
   const ctx = ctxOf(req);
-  const rows = await prisma.branch.findMany({
-    where: { tenantId: tenantId(ctx) },
-    include: { location: true, registers: { include: { devices: true } }, _count: { select: { userBranches: true, sales: true } } },
-    orderBy: { name: "asc" },
+  const list = parseListQuery(req.query, { sortable: ["name", "code"], defaultSort: "name", defaultOrder: "asc" });
+  const q = list.search;
+  const where = {
+    tenantId: tenantId(ctx),
+    ...(q ? { OR: [{ name: ilike(q) }, { code: ilike(q) }] } : {}),
+  };
+  const { rows, pagination } = await withPagination(list, {
+    find: (skip, take) =>
+      prisma.branch.findMany({
+        where,
+        include: { location: true, registers: { include: { devices: true } }, _count: { select: { userBranches: true, sales: true } } },
+        orderBy: list.sortBy === "code" ? { code: list.sortOrder } : { name: list.sortOrder },
+        skip,
+        take,
+      }),
+    count: () => prisma.branch.count({ where }),
   });
-  return ok(res, rows);
+  return okList(res, rows, pagination);
 });
 
 orgRouter.post("/branches", requirePermission("branch.manage"), async (req, res) => {
@@ -138,12 +151,25 @@ orgRouter.delete("/branches/:id", requirePermission("branch.manage"), async (req
 
 orgRouter.get("/warehouses", requirePermission("warehouse.manage"), async (req, res) => {
   const ctx = ctxOf(req);
-  const rows = await prisma.location.findMany({
-    where: { tenantId: tenantId(ctx), type: "WAREHOUSE" },
-    include: { _count: { select: { stock: true } } },
-    orderBy: { name: "asc" },
+  const list = parseListQuery(req.query, { sortable: ["name"], defaultSort: "name", defaultOrder: "asc" });
+  const q = list.search;
+  const where = {
+    tenantId: tenantId(ctx),
+    type: "WAREHOUSE" as const,
+    ...(q ? { name: ilike(q) } : {}),
+  };
+  const { rows, pagination } = await withPagination(list, {
+    find: (skip, take) =>
+      prisma.location.findMany({
+        where,
+        include: { _count: { select: { stock: true } } },
+        orderBy: { name: list.sortOrder },
+        skip,
+        take,
+      }),
+    count: () => prisma.location.count({ where }),
   });
-  return ok(res, rows);
+  return okList(res, rows, pagination);
 });
 
 orgRouter.post("/warehouses", requirePermission("warehouse.manage"), async (req, res) => {
@@ -162,6 +188,19 @@ orgRouter.post("/warehouses", requirePermission("warehouse.manage"), async (req,
     data: { tenantId: tenantId(ctx), locationId: loc.id, channel: "WAREHOUSE" },
   });
   return ok(res, loc, undefined, 201);
+});
+
+orgRouter.patch("/warehouses/:id", requirePermission("warehouse.manage"), async (req, res) => {
+  const ctx = ctxOf(req);
+  const existing = await prisma.location.findFirst({
+    where: { id: String(req.params.id), tenantId: tenantId(ctx), type: "WAREHOUSE" },
+  });
+  if (!existing) return fail(res, "NOT_FOUND", "Warehouse not found", 404);
+  const row = await prisma.location.update({
+    where: { id: existing.id },
+    data: { name: req.body?.name },
+  });
+  return ok(res, row);
 });
 
 orgRouter.delete("/warehouses/:id", requirePermission("warehouse.manage"), async (req, res) => {

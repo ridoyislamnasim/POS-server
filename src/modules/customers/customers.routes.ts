@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { fail, ok } from "../../lib/envelope.js";
+import { fail, ok, okList } from "../../lib/envelope.js";
 import { requireAuth, requirePermission, requireTenant } from "../../middleware/auth.js";
 import { ForbiddenError } from "../../lib/scope.js";
 import { prisma } from "../../lib/prisma.js";
@@ -7,23 +7,43 @@ import { tenantId } from "../../lib/erp.js";
 import { writeAudit } from "../../lib/audit.js";
 import type { AuthedRequest } from "../../types.js";
 import { customerRepository } from "./customer.repository.js";
+import { normalizeBdPhone } from "../../shared/phone.js";
 
 export const customersRouter = Router();
 customersRouter.use(requireAuth, requireTenant);
 
-customersRouter.get("/", requirePermission("customer.view"), async (req, res) => {
+function canLookupCustomers(ctx: AuthedRequest["ctx"]) {
+  return (
+    ctx.isPlatform ||
+    ctx.roles.includes("TENANT_OWNER") ||
+    ctx.permissions.includes("customer.view") ||
+    ctx.permissions.includes("sale.create")
+  );
+}
+
+customersRouter.get("/", async (req, res) => {
   const ctx = (req as AuthedRequest).ctx;
+  if (!canLookupCustomers(ctx)) return fail(res, "FORBIDDEN", "Missing permission", 403);
   const phone = req.query.phone ? String(req.query.phone) : "";
   if (phone) {
     const row = await customerRepository.findByPhone(ctx, phone);
     return ok(res, row);
   }
-  const { rows, meta } = await customerRepository.list(ctx, {
-    limit: req.query.limit,
-    cursor: req.query.cursor,
+  if (!ctx.isPlatform && !ctx.roles.includes("TENANT_OWNER") && !ctx.permissions.includes("customer.view")) {
+    return fail(res, "FORBIDDEN", "Missing permission", 403);
+  }
+  const { rows, pagination } = await customerRepository.list(ctx, req.query as Record<string, unknown>);
+  return okList(res, rows, pagination);
+});
+
+customersRouter.get("/search", async (req, res) => {
+  const ctx = (req as AuthedRequest).ctx;
+  if (!canLookupCustomers(ctx)) return fail(res, "FORBIDDEN", "Missing permission", 403);
+  const rows = await customerRepository.search(ctx, {
     q: req.query.q ? String(req.query.q) : undefined,
+    limit: req.query.limit,
   });
-  return ok(res, rows, meta);
+  return ok(res, rows);
 });
 
 customersRouter.get("/:id", requirePermission("customer.view"), async (req, res) => {
@@ -58,8 +78,13 @@ customersRouter.post("/", async (req, res) => {
   if (!ctx.permissions.includes("customer.manage") && !ctx.permissions.includes("sale.create") && !ctx.isPlatform) {
     return fail(res, "FORBIDDEN", "Missing permission", 403);
   }
-  const { name, phone, email, address, notes, taxId, creditLimit, type } = req.body ?? {};
-  if (!name || !phone) return fail(res, "VALIDATION", "name and phone required");
+  const { name, phone, email, address, notes, taxId, creditLimit, type, createOnly } = req.body ?? {};
+  if (!phone) return fail(res, "VALIDATION", "phone required");
+  if (String(phone).replace(/\D/g, "").length < 10) return fail(res, "VALIDATION", "Enter a valid phone number");
+  if (createOnly) {
+    const existing = await customerRepository.findByPhone(ctx, String(phone));
+    if (existing) return ok(res, { ...existing, alreadyExists: true });
+  }
   const row = await customerRepository.upsertByPhone(ctx, { name, phone });
   const updated = await prisma.customer.update({
     where: { id: row.id },
@@ -85,6 +110,9 @@ customersRouter.patch("/:id", requirePermission("customer.manage"), async (req, 
       data: {
         name: b.name,
         email: b.email,
+        ...(b.phone
+          ? { phone: b.phone, phoneCanonical: normalizeBdPhone(b.phone) }
+          : {}),
         address: b.address,
         notes: b.notes,
         taxId: b.taxId,

@@ -51,7 +51,7 @@ authRouter.post("/login", async (req, res) => {
       ip: req.ip,
     },
   });
-  const access = signAccess({ sub: user.id, tenantId: membership.tenantId });
+  const access = signAccess({ sub: user.id, tenantId: membership.tenantId, sid: session.id });
   const refresh = signRefresh({ sub: user.id, sid: session.id });
   await prisma.session.update({
     where: { id: session.id },
@@ -89,6 +89,17 @@ authRouter.post("/login", async (req, res) => {
 
 authRouter.post("/logout", requireAuth, async (req, res) => {
   const ctx = (req as AuthedRequest).ctx;
+  if (ctx.sessionId) {
+    await prisma.session.updateMany({
+      where: { id: ctx.sessionId, userId: ctx.userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  } else {
+    await prisma.session.updateMany({
+      where: { userId: ctx.userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  }
   await writeAudit({
     ctx,
     action: "logout",

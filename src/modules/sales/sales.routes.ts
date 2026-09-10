@@ -1,14 +1,14 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
-import { fail, ok } from "../../lib/envelope.js";
+import { fail, ok, okList } from "../../lib/envelope.js";
 import { requireAuth, requirePermission, requireTenant } from "../../middleware/auth.js";
 import { ForbiddenError, InsufficientStockError, assertBranch } from "../../lib/scope.js";
 import { writeAudit } from "../../lib/audit.js";
 import type { AuthedRequest } from "../../types.js";
 import { createSale } from "./sales.service.js";
 import { saleRepository } from "./sale.repository.js";
-import { createSaleReturn, decideSaleReturn, listReturns, voidSale } from "./returns.service.js";
+import { createSaleReturn, decideSaleReturn, getReturn, listReturns, refundSaleReturn, returnsSummary, voidSale } from "./returns.service.js";
 
 export const salesRouter = Router();
 salesRouter.use(requireAuth, requireTenant);
@@ -87,18 +87,42 @@ salesRouter.get("/holds/open", async (req, res) => {
 
 salesRouter.get("/", requirePermission("sale.view"), async (req, res) => {
   const ctx = (req as AuthedRequest).ctx;
-  const { rows, meta } = await saleRepository.list(ctx, req.query);
-  return ok(res, rows, meta);
+  try {
+    const { rows, pagination } = await saleRepository.list(ctx, req.query as Record<string, unknown>);
+    return okList(res, rows, pagination);
+  } catch (e) {
+    if (e instanceof ForbiddenError) return fail(res, "FORBIDDEN", e.message, 403);
+    throw e;
+  }
 });
 
 salesRouter.get("/returns", requirePermission("sale.view"), async (req, res) => {
-  const rows = await listReturns((req as AuthedRequest).ctx);
-  return ok(res, rows);
+  const { rows, pagination } = await listReturns((req as AuthedRequest).ctx, req.query as Record<string, unknown>);
+  return okList(res, rows, pagination);
 });
 
-salesRouter.post("/returns/:id/approve", requirePermission("refund.approve"), async (req, res) => {
+salesRouter.get("/returns/summary", requirePermission("sale.view"), async (req, res) => {
+  return ok(res, await returnsSummary((req as AuthedRequest).ctx, req.query as Record<string, unknown>));
+});
+
+salesRouter.get("/returns/:id", requirePermission("sale.view"), async (req, res) => {
   try {
-    const row = await decideSaleReturn({ ctx: (req as unknown as AuthedRequest).ctx, id: String(req.params.id), approve: true });
+    return ok(res, await getReturn((req as unknown as AuthedRequest).ctx, String(req.params.id)));
+  } catch (e) {
+    const err = e as Error & { code?: string };
+    const status = err.code === "NOT_FOUND" ? 404 : err instanceof ForbiddenError || err.code === "FORBIDDEN" ? 403 : 400;
+    return fail(res, err.code ?? "VALIDATION", err.message, status);
+  }
+});
+
+salesRouter.post("/returns/:id/approve", async (req, res) => {
+  try {
+    const row = await decideSaleReturn({
+      ctx: (req as unknown as AuthedRequest).ctx,
+      id: String(req.params.id),
+      approve: true,
+      refund: req.body?.refund,
+    });
     return ok(res, row);
   } catch (e) {
     const err = e as Error & { code?: string };
@@ -107,9 +131,26 @@ salesRouter.post("/returns/:id/approve", requirePermission("refund.approve"), as
   }
 });
 
-salesRouter.post("/returns/:id/reject", requirePermission("refund.approve"), async (req, res) => {
+salesRouter.post("/returns/:id/reject", async (req, res) => {
   try {
     const row = await decideSaleReturn({ ctx: (req as unknown as AuthedRequest).ctx, id: String(req.params.id), approve: false });
+    return ok(res, row);
+  } catch (e) {
+    const err = e as Error & { code?: string };
+    const status = err instanceof ForbiddenError || err.code === "FORBIDDEN" ? 403 : 400;
+    return fail(res, err.code ?? "VALIDATION", err.message, status);
+  }
+});
+
+salesRouter.post("/returns/:id/refund", requirePermission("refund.approve"), async (req, res) => {
+  try {
+    const row = await refundSaleReturn({
+      ctx: (req as unknown as AuthedRequest).ctx,
+      id: String(req.params.id),
+      amount: req.body?.amount != null ? Number(req.body.amount) : undefined,
+      method: req.body?.method,
+      idempotencyKey: (req.headers["idempotency-key"] as string | undefined) ?? req.body?.idempotencyKey,
+    });
     return ok(res, row);
   } catch (e) {
     const err = e as Error & { code?: string };
@@ -142,6 +183,8 @@ const returnSchema = z.object({
         qty: z.number().positive(),
         restock: z.boolean().optional(),
         reason: z.string().optional(),
+        notes: z.string().optional(),
+        condition: z.enum(["GOOD", "DAMAGED", "DEFECTIVE", "EXPIRED", "MISSING_PARTS", "RESTOCK_NOT_ALLOWED"]).optional(),
       }),
     )
     .min(1),
@@ -157,6 +200,7 @@ salesRouter.post("/:id/returns", requirePermission("sale.return"), async (req, r
     const row = await createSaleReturn({
       ctx: (req as unknown as AuthedRequest).ctx,
       saleId: String(req.params.id),
+      idempotencyKey: req.headers["idempotency-key"] as string | undefined,
       ...parsed.data,
     });
     return ok(res, row, undefined, 201);
@@ -213,10 +257,12 @@ salesRouter.post("/hold", requirePermission("sale.create"), async (req, res) => 
   return ok(res, row, undefined, 201);
 });
 
-salesRouter.delete("/holds/:id", async (req, res) => {
+salesRouter.delete("/holds/:id", requirePermission("sale.create"), async (req, res) => {
   const ctx = (req as unknown as AuthedRequest).ctx;
-  const existing = await prisma.heldSale.findFirst({ where: { id: String(req.params.id) } });
-  if (!existing || existing.tenantId !== ctx.tenantId || existing.cashierId !== ctx.userId) {
+  const existing = await prisma.heldSale.findFirst({
+    where: { id: String(req.params.id), tenantId: ctx.tenantId!, cashierId: ctx.userId },
+  });
+  if (!existing) {
     return fail(res, "FORBIDDEN", "Forbidden", 403);
   }
   await prisma.heldSale.delete({ where: { id: existing.id } });
