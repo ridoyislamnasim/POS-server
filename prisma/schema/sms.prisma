@@ -1,0 +1,83 @@
+// Tenant-scoped SMS settings, templates, logs, and monthly usage.
+
+model SmsSettings {
+  id                   String    @id @default(cuid())
+  tenantId             String    @unique
+  tenant               Tenant    @relation(fields: [tenantId], references: [id])
+  provider             String    @default("GENERIC_HTTP")
+  senderId             String?
+  apiKeyEnc            String?
+  apiSecretEnc         String?
+  apiBaseUrl           String?
+  extraConfigEnc       String?
+  defaultLanguage      String    @default("en")
+  autoSendEnabled      Boolean   @default(true)
+  platformEnabled      Boolean   @default(true)
+  monthlyQuota         Int?
+  creditsRemaining     Int?
+  lastBalance          Decimal?  @db.Decimal(19, 4)
+  lastBalanceCheckedAt DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+}
+
+model SmsTemplate {
+  id            String           @id @default(cuid())
+  tenantId      String
+  key           String
+  name          String
+  purpose       String
+  recipientType SmsRecipientType
+  bodyEn        String
+  bodyBn        String
+  enabled       Boolean          @default(true)
+  customized    Boolean          @default(false)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  @@unique([tenantId, key])
+  @@index([tenantId, recipientType])
+}
+
+model SmsLog {
+  id               String           @id @default(cuid())
+  tenantId         String
+  recipient        String
+  recipientName    String?
+  recipientType    SmsRecipientType
+  message          String
+  templateKey      String?
+  purpose          String
+  language         String           @default("en")
+  sentByUserId     String?
+  sentAt           DateTime?
+  status           SmsStatus        @default(PENDING)
+  provider         String?
+  providerResponse String?
+  error            String?
+  referenceType    String?
+  referenceId      String?
+  idempotencyKey   String
+  attempts         Int              @default(0)
+  retryable        Boolean          @default(true)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, status])
+  @@index([tenantId, recipientType])
+  @@index([tenantId, purpose])
+  @@index([tenantId, referenceType, referenceId])
+}
+
+model SmsUsageMonth {
+  id           String @id @default(cuid())
+  tenantId     String
+  period       String
+  sentCount    Int    @default(0)
+  failedCount  Int    @default(0)
+  pendingCount Int    @default(0)
+
+  @@unique([tenantId, period])
+}

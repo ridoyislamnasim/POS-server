@@ -15,6 +15,8 @@
 //   staff.prisma      attendance, shift templates
 //   commerce.prisma   sales orders, e-commerce, delivery
 //   settings.prisma   tenant settings, templates, API keys, backups
+//   billing.prisma    platform invoices + payment events
+//   sms.prisma        tenant SMS settings, templates, logs, usage
 
 generator client {
   provider = "prisma-client-js"

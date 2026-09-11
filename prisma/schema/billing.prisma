@@ -1,0 +1,41 @@
+// Platform owner invoices billed to tenants (SaaS fees, not POS sales).
+
+model PlatformInvoice {
+  id          String                @id @default(cuid())
+  number      String                @unique
+  tenantId    String
+  tenant      Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  periodStart DateTime
+  periodEnd   DateTime
+  dueDate     DateTime
+  amount      Decimal               @db.Decimal(19, 4)
+  currency    String                @default("BDT")
+  status      PlatformInvoiceStatus @default(PENDING)
+  sentAt      DateTime?
+  paidAt      DateTime?
+  paidNote    String?
+  notes       String?
+  lines       Json?
+  createdById String?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @default(now()) @updatedAt
+  events      PlatformInvoiceEvent[]
+
+  @@index([tenantId, status])
+  @@index([tenantId, dueDate])
+  @@index([status, dueDate])
+}
+
+model PlatformInvoiceEvent {
+  id        String           @id @default(cuid())
+  invoiceId String?
+  invoice   PlatformInvoice? @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  tenantId  String
+  type      String
+  note      String?
+  actorId   String?
+  createdAt DateTime         @default(now())
+
+  @@index([invoiceId, createdAt])
+  @@index([tenantId, createdAt])
+}

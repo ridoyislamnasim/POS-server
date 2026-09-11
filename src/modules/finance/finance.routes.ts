@@ -350,6 +350,14 @@ financeRouter.post("/payments", requirePermission("payment.manage"), async (req,
         payload: { branchId: branchId || null, amount: String(amt), partyType, entityType: "LedgerPayment", entityId: pay.id },
       });
     }
+    if (direction === "OUT" && partyType === "SUPPLIER") {
+      await enqueueOutbox(tx, {
+        tenantId: tid,
+        type: "PAYMENT_MADE",
+        aggregateId: pay.id,
+        payload: { branchId: branchId || null, amount: String(amt), partyType, entityType: "LedgerPayment", entityId: pay.id },
+      });
+    }
     return pay;
   });
   await writeAudit({ ctx, action: "payment.create", entityType: "LedgerPayment", entityId: row.id });

@@ -4,6 +4,7 @@ import { deliverNotification } from "../notifications/notification.service.js";
 import { stockAlertPriority } from "../notifications/crossing.js";
 import { branchIdForLocation } from "../notifications/recipients.js";
 import { loadNotificationSettings } from "../notifications/settings.js";
+import { dispatchSmsFromOutbox } from "../sms/sms.events.js";
 
 type Payload = Record<string, unknown>;
 
@@ -143,6 +144,28 @@ async function handleEvent(event: {
       );
     case "SYSTEM_ALERT":
       return notify(event.tenantId, "SYSTEM_ALERT", str(payload.title) || "System alert", str(payload.message) || "A system event needs attention.", "HIGH", payload, base, "/notifications");
+    case "PLATFORM_INVOICE_SENT":
+      return notify(
+        event.tenantId,
+        "PLATFORM_INVOICE",
+        str(payload.title) || `Platform invoice ${str(payload.number)}`,
+        str(payload.message) || "A new platform invoice is ready. Open Subscription to view it.",
+        "HIGH",
+        payload,
+        base,
+        "/subscription",
+      );
+    case "PLATFORM_RECEIPT_SENT":
+      return notify(
+        event.tenantId,
+        "PLATFORM_RECEIPT",
+        str(payload.title) || `Payment receipt ${str(payload.number)}`,
+        str(payload.message) || "Payment confirmed for your platform invoice.",
+        "NORMAL",
+        payload,
+        base,
+        "/subscription",
+      );
     default:
       return { created: 0 };
   }
@@ -272,6 +295,15 @@ export async function processOutboxBatch(limit = 20) {
   for (const event of events) {
     try {
       await handleEvent(event);
+      const kind = event.eventType || event.type;
+      const payload = (event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+        ? event.payload
+        : {}) as Payload;
+      try {
+        await dispatchSmsFromOutbox(kind, event.tenantId, event.aggregateId, payload);
+      } catch (smsErr) {
+        console.warn("SMS dispatch after outbox failed", smsErr);
+      }
       await prisma.outboxEvent.update({
         where: { id: event.id },
         data: { processedAt: new Date(), lastError: null },

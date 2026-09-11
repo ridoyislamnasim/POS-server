@@ -297,6 +297,15 @@ enum NotificationType {
   BACKUP_SUCCESS
   BACKUP_FAILED
   MANUAL
+  PLATFORM_INVOICE
+  PLATFORM_RECEIPT
+}
+
+enum PlatformInvoiceStatus {
+  PENDING
+  PAID
+  OVERDUE
+  VOID
 }
 
 enum NotificationPriority {
@@ -326,4 +335,16 @@ enum PlanInterval {
 enum PartyStatus {
   ACTIVE
   INACTIVE
+}
+
+enum SmsRecipientType {
+  CUSTOMER
+  SUPPLIER
+  STAFF
+}
+
+enum SmsStatus {
+  PENDING
+  SENT
+  FAILED
 }

@@ -59,6 +59,9 @@ export const Permissions = [
   "order.view",
   "order.manage",
   "delivery.manage",
+  "sms.view",
+  "sms.send",
+  "sms.settings",
 ] as const;
 
 export type PermissionKey = (typeof Permissions)[number];
@@ -117,6 +120,9 @@ export const MANAGER_KEYS: PermissionKey[] = [
   "order.view",
   "order.manage",
   "delivery.manage",
+  "sms.view",
+  "sms.send",
+  "sms.settings",
   "user.create",
   "user.manage",
 ];
@@ -131,4 +137,5 @@ export const CASHIER_KEYS: PermissionKey[] = [
   "customer.view",
   "inventory.view",
   "notification.view",
+  "sms.send",
 ];

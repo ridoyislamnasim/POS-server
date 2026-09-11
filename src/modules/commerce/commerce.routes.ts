@@ -6,6 +6,7 @@ import { branchScope, nextDocNumber, num, tenantId } from "../../lib/erp.js";
 import { assertBranch } from "../../lib/scope.js";
 import type { AuthedRequest } from "../../types.js";
 import { acceptEnum, acceptId, createdAtRange, ilike, parseListQuery, withPagination } from "../../lib/list-query.js";
+import { enqueueOutbox } from "../outbox/enqueue.js";
 
 export const commerceRouter = Router();
 commerceRouter.use(requireAuth, requireTenant);
@@ -93,6 +94,12 @@ commerceRouter.post("/sales-orders", requirePermission("order.manage"), async (r
     },
     include: { items: true, customer: true },
   });
+  await enqueueOutbox(prisma, {
+    tenantId: tid,
+    type: "ORDER_STATUS",
+    aggregateId: row.id,
+    payload: { status: row.status, entityType: "SalesOrder", entityId: row.id },
+  });
   return ok(res, row, undefined, 201);
 });
 
@@ -114,6 +121,14 @@ commerceRouter.patch("/sales-orders/:id", requirePermission("order.manage"), asy
     data: { status: status as never, notes: req.body?.notes },
     include: { items: true, customer: true },
   });
+  if (status && status !== existing.status) {
+    await enqueueOutbox(prisma, {
+      tenantId: tenantId(ctx),
+      type: "ORDER_STATUS",
+      aggregateId: row.id,
+      payload: { status: row.status, entityType: "SalesOrder", entityId: row.id },
+    });
+  }
   return ok(res, row);
 });
 
@@ -232,6 +247,12 @@ commerceRouter.post("/deliveries", requirePermission("delivery.manage"), async (
       notes,
     },
   });
+  await enqueueOutbox(prisma, {
+    tenantId: tenantId(ctx),
+    type: "DELIVERY_UPDATE",
+    aggregateId: row.id,
+    payload: { status: row.status, entityType: "Delivery", entityId: row.id },
+  });
   return ok(res, row, undefined, 201);
 });
 
@@ -253,6 +274,14 @@ commerceRouter.patch("/deliveries/:id", requirePermission("delivery.manage"), as
       notes: req.body?.notes,
     },
   });
+  if (req.body?.status && req.body.status !== existing.status) {
+    await enqueueOutbox(prisma, {
+      tenantId: tenantId(ctx),
+      type: "DELIVERY_UPDATE",
+      aggregateId: row.id,
+      payload: { status: row.status, entityType: "Delivery", entityId: row.id },
+    });
+  }
   return ok(res, row);
 });
 

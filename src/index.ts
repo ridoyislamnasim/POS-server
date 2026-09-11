@@ -4,6 +4,7 @@ import { ensurePartialIndexes } from "./lib/ensure-indexes.js";
 import { syncPermissions } from "./lib/permissions-sync.js";
 import { backfillLegacyNotifications } from "./modules/notifications/notification.service.js";
 import { startOutboxPoller } from "./modules/outbox/worker.js";
+import { startSmsPoller } from "./modules/sms/sms.poller.js";
 
 const port = Number(process.env.PORT ?? 4000);
 
@@ -20,4 +21,5 @@ await backfillLegacyNotifications().catch((e) => {
 createApp().listen(port, () => {
   console.log(`POS API http://localhost:${port}`);
   startOutboxPoller(5000);
+  startSmsPoller(15_000);
 });

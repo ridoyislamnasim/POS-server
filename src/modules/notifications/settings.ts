@@ -95,6 +95,8 @@ export function categoryEnabled(settings: NotificationAlertSettings, type: Notif
     case "BACKUP_SUCCESS":
     case "BACKUP_FAILED":
     case "MANUAL":
+    case "PLATFORM_INVOICE":
+    case "PLATFORM_RECEIPT":
       return true;
     default:
       return true;

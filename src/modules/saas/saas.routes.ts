@@ -8,6 +8,8 @@ import { writeAudit } from "../../lib/audit.js";
 import type { AuthedRequest } from "../../types.js";
 import { parseListQuery, withPagination } from "../../lib/list-query.js";
 import { enqueueOutbox } from "../outbox/enqueue.js";
+import { assertTenantApiKeysAllowed } from "../platform-billing/billing.service.js";
+import { PAYMENT_REQUIRED_MESSAGE } from "../../middleware/auth.js";
 
 export const saasRouter = Router();
 saasRouter.use(requireAuth, requireTenant);
@@ -58,6 +60,13 @@ saasRouter.get("/api-keys", requirePermission("integration.manage"), async (req,
 
 saasRouter.post("/api-keys", requirePermission("integration.manage"), async (req, res) => {
   const ctx = ctxOf(req);
+  try {
+    await assertTenantApiKeysAllowed(tenantId(ctx));
+  } catch (e) {
+    const err = e as { code?: string; message?: string };
+    if (err.code === "PAYMENT_REQUIRED") return fail(res, "PAYMENT_REQUIRED", PAYMENT_REQUIRED_MESSAGE, 402);
+    throw e;
+  }
   const name = String(req.body?.name ?? "").trim();
   if (!name) return fail(res, "VALIDATION", "name required");
   const raw = `pos_${randomBytes(24).toString("hex")}`;

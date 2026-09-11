@@ -14,7 +14,7 @@ const TYPE_GROUPS: Record<string, NotificationType[]> = {
   purchase: ["PURCHASE_CREATED", "PURCHASE_RECEIVED", "PURCHASE_CANCELLED"],
   returns: ["SALE_RETURNED", "RETURN_APPROVAL"],
   staff: ["STAFF_CREATED", "STAFF_DEACTIVATED", "ROLE_CHANGED", "BRANCH_CHANGED", "SHIFT_ALERT"],
-  system: ["SYSTEM_ALERT", "BACKUP_SUCCESS", "BACKUP_FAILED", "MANUAL", "PAYMENT_RECEIVED", "DUE_PAYMENT", "EXPENSE_CREATED", "CASH_VARIANCE"],
+  system: ["SYSTEM_ALERT", "BACKUP_SUCCESS", "BACKUP_FAILED", "MANUAL", "PAYMENT_RECEIVED", "DUE_PAYMENT", "EXPENSE_CREATED", "CASH_VARIANCE", "PLATFORM_INVOICE", "PLATFORM_RECEIPT"],
 };
 
 const sendWindow = new Map<string, number[]>();
@@ -100,6 +100,8 @@ export async function listNotifications(ctx: RequestContext, query: Record<strin
     "BACKUP_SUCCESS",
     "BACKUP_FAILED",
     "MANUAL",
+    "PLATFORM_INVOICE",
+    "PLATFORM_RECEIPT",
   ] as const);
   const priority = acceptEnum(query.priority, ["LOW", "NORMAL", "HIGH", "CRITICAL"] as const);
   const readFilter = query.isRead === "true" || query.isRead === true ? true : query.isRead === "false" || query.isRead === false ? false : undefined;

@@ -15,5 +15,6 @@ Prisma loads **every** `.prisma` file in this folder. Relations work across file
 | `sales.prisma` | Sale, Payment, Invoice documents |
 | `shift.prisma` | Cashier shift |
 | `platform.prisma` | Outbox, Audit, Idempotency, Packs |
+| `sms.prisma` | Tenant SMS settings, templates, logs, usage |
 
 Do not put models back into one giant file.

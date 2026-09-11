@@ -52,7 +52,7 @@ purchasesRouter.get("/", requirePermission("purchase.view"), async (req, res) =>
           due: true,
           status: true,
           createdAt: true,
-          supplier: { select: { id: true, name: true } },
+          supplier: { select: { id: true, name: true, phone: true } },
           branch: { select: { name: true } },
           items: { select: { id: true, variantId: true, qty: true, unitCost: true } },
         },
@@ -322,7 +322,7 @@ purchasesRouter.get("/returns", requirePermission("purchase.view"), async (req, 
           reason: true,
           total: true,
           createdAt: true,
-          purchase: { select: { invoiceNumber: true } },
+          purchase: { select: { invoiceNumber: true, supplier: { select: { id: true, name: true, phone: true } } } },
         },
         orderBy: { createdAt: list.sortOrder },
         skip,
@@ -427,6 +427,12 @@ purchasesRouter.post("/:id/returns", requirePermission("purchase.manage"), async
           data: { creditDue: { decrement: cut } },
         });
       }
+      await enqueueOutbox(tx, {
+        tenantId: tid,
+        type: "PURCHASE_RETURNED",
+        aggregateId: ret.id,
+        payload: { branchId: purchase.branchId, number: ret.number, entityType: "PurchaseReturn", entityId: ret.id },
+      });
       return ret;
     });
     await writeAudit({ ctx, action: "purchase.manage", entityType: "PurchaseReturn", entityId: row.id });

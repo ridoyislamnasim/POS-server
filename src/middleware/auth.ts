@@ -88,10 +88,51 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       businessDate: businessDateInTz(),
     };
     (req as AuthedRequest).ctx = ctx;
-    next();
+    return enforceApiAccess(req, res, next);
   } catch {
     return fail(res, "UNAUTHORIZED", "Invalid session", 401);
   }
+}
+
+export const PAYMENT_REQUIRED_MESSAGE =
+  "Please pay your previous month's bill to continue using the platform.";
+
+export function isPlatformActor(ctx?: RequestContext | null) {
+  return Boolean(ctx?.isPlatform || ctx?.roles?.includes("PLATFORM_SUPER_ADMIN"));
+}
+
+export function isApiAccessExempt(req: Request) {
+  const path = (req.originalUrl || req.url).split("?")[0];
+  const method = req.method;
+  if (path.startsWith("/api/v1/auth")) return true;
+  if (method === "GET" && path === "/api/v1/saas/subscription") return true;
+  if (method === "GET" && path === "/api/v1/platform-billing/my-invoices") return true;
+  if (method === "GET" && /^\/api\/v1\/platform-billing\/invoices\/[^/]+\/(pdf|receipt\.pdf|print)$/.test(path)) {
+    return true;
+  }
+  if (method === "GET" && path.startsWith("/api/v1/extras/notifications")) return true;
+  return false;
+}
+
+export async function enforceApiAccess(req: Request, res: Response, next: NextFunction) {
+  const ctx = (req as AuthedRequest).ctx;
+  if (!ctx || isPlatformActor(ctx)) return next();
+  if (isApiAccessExempt(req)) return next();
+  if (!ctx.tenantId) return next();
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: ctx.tenantId },
+    select: { apiAccessEnabled: true },
+  });
+  if (tenant && tenant.apiAccessEnabled === false) {
+    return fail(res, "PAYMENT_REQUIRED", PAYMENT_REQUIRED_MESSAGE, 402);
+  }
+  return next();
+}
+
+export function requirePlatform(req: Request, res: Response, next: NextFunction) {
+  const ctx = (req as AuthedRequest).ctx;
+  if (isPlatformActor(ctx)) return next();
+  return fail(res, "FORBIDDEN", "Platform access required", 403);
 }
 
 export function requirePermission(key: string) {

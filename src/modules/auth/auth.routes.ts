@@ -133,6 +133,13 @@ authRouter.get("/me", requireAuth, async (req, res) => {
           include: branchInclude,
         })
       : user.branches.map((b) => b.branch);
+  const tenant = ctx.tenantId
+    ? await prisma.tenant.findUnique({
+        where: { id: ctx.tenantId },
+        select: { apiAccessEnabled: true, apiAccessDisabledReason: true },
+      })
+    : null;
+  const apiAccessEnabled = ctx.isPlatform ? true : tenant?.apiAccessEnabled !== false;
   return ok(res, {
     id: user.id,
     name: user.name,
@@ -145,5 +152,10 @@ authRouter.get("/me", requireAuth, async (req, res) => {
     branches,
     allBranches: ctx.allBranches,
     isPlatform: ctx.isPlatform,
+    apiAccessEnabled,
+    lockMessage: apiAccessEnabled
+      ? null
+      : tenant?.apiAccessDisabledReason ||
+        "Please pay your previous month's bill to continue using the platform.",
   });
 });

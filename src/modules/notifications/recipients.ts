@@ -198,6 +198,9 @@ export function audienceForType(type: NotificationType): Audience {
       return "shift";
     case "MANUAL":
       return "manual";
+    case "PLATFORM_INVOICE":
+    case "PLATFORM_RECEIPT":
+      return "system";
     default:
       return "system";
   }
