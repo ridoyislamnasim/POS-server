@@ -1,5 +1,13 @@
 import { Prisma, type PaymentStatus, type SaleStatus } from "@prisma/client";
-import { invoiceTotals, lineTotals, toMoneyString } from "../../shared/money.js";
+import {
+  invoiceTotals,
+  itemDiscountAmount,
+  lineTotals,
+  money,
+  roundMoney,
+  toMoneyString,
+  transactionDiscountAmount,
+} from "../../shared/money.js";
 import { prisma } from "../../lib/prisma.js";
 import { ForbiddenError, InsufficientStockError, assertBranch, hasPermission, requireTenantId } from "../../lib/scope.js";
 import { applyStockChange } from "../inventory/stock.engine.js";
@@ -10,6 +18,7 @@ type ItemIn = {
   variantId: string;
   qty: number;
   discountAmount?: string;
+  discountPercent?: string;
   discountReason?: string;
   associateId?: string;
 };
@@ -111,6 +120,8 @@ export async function createSale(input: {
   items: ItemIn[];
   payments: PayLine[];
   transactionDiscount?: string;
+  transactionDiscountPercent?: string;
+  transactionDiscountReason?: string;
 }) {
   const tenantId = requireTenantId(input.ctx);
   assertBranch(input.ctx, input.branchId);
@@ -185,7 +196,12 @@ export async function createSale(input: {
       const line = lineTotals({
         unitPrice: variant.price.toString(),
         qty: item.qty,
-        lineDiscount: item.discountAmount ?? 0,
+        lineDiscount: itemDiscountAmount({
+          unitPrice: variant.price.toString(),
+          qty: item.qty,
+          flat: item.discountAmount ?? 0,
+          percent: item.discountPercent ?? 0,
+        }),
         taxRatePercent: rate.toString(),
       });
       const variantSnap = variant.attributes
@@ -201,9 +217,15 @@ export async function createSale(input: {
       });
     }
 
+    const subtotal = roundMoney(computed.reduce((s, c) => s.plus(money(c.line.taxable)), money(0)));
+    const txDiscount = transactionDiscountAmount({
+      subtotal,
+      flat: input.transactionDiscount ?? 0,
+      percent: input.transactionDiscountPercent ?? 0,
+    });
     const totals = invoiceTotals(
       computed.map((c) => c.line),
-      input.transactionDiscount ?? 0,
+      txDiscount,
     );
     if (totals.discount.greaterThan(0)) {
       if (!hasPermission(input.ctx, "discount.apply")) {
@@ -370,7 +392,21 @@ export async function createSale(input: {
         tenantId,
         saleId: sale.id,
         type: "SALE_REVENUE",
-        payload: { saleId: sale.id, total: sale.total, tax: sale.tax, status },
+        payload: {
+          saleId: sale.id,
+          total: sale.total,
+          tax: sale.tax,
+          status,
+          ...(txDiscount.greaterThan(0)
+            ? {
+                transactionDiscount: {
+                  amount: toMoneyString(txDiscount),
+                  percent: input.transactionDiscountPercent ?? undefined,
+                  reason: input.transactionDiscountReason ?? undefined,
+                },
+              }
+            : {}),
+        },
       },
     });
 
@@ -424,7 +460,7 @@ export async function createSale(input: {
       },
     });
     for (const c of computed) {
-      if (c.item.discountAmount && Number(c.item.discountAmount) > 0) {
+      if (c.line.discount.greaterThan(0)) {
         await tx.auditLog.create({
           data: {
             tenantId,
@@ -433,11 +469,35 @@ export async function createSale(input: {
             action: "discount.apply",
             entityType: "SaleItem",
             entityId: sale.id,
-            after: { variantId: c.variant.id, amount: c.item.discountAmount, reason: c.item.discountReason },
+            after: {
+              variantId: c.variant.id,
+              amount: toMoneyString(c.line.discount),
+              percent: c.item.discountPercent ?? undefined,
+              reason: c.item.discountReason,
+            },
             correlationId: input.correlationId,
           },
         });
       }
+    }
+    if (txDiscount.greaterThan(0)) {
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId: input.ctx.userId,
+          actorUserId: input.ctx.userId,
+          action: "discount.apply",
+          entityType: "Sale",
+          entityId: sale.id,
+          after: {
+            scope: "TRANSACTION",
+            amount: toMoneyString(txDiscount),
+            percent: input.transactionDiscountPercent ?? undefined,
+            reason: input.transactionDiscountReason ?? undefined,
+          },
+          correlationId: input.correlationId,
+        },
+      });
     }
 
     if (input.idempotencyKey) {

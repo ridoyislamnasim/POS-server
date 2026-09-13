@@ -22,12 +22,15 @@ const createSchema = z.object({
   customerId: z.string().optional(),
   channel: z.enum(["STORE", "ONLINE", "MARKETPLACE"]).optional(),
   transactionDiscount: z.string().optional(),
+  transactionDiscountPercent: z.string().optional(),
+  transactionDiscountReason: z.string().optional(),
   items: z
     .array(
       z.object({
         variantId: z.string(),
         qty: z.number().positive(),
         discountAmount: z.string().optional(),
+        discountPercent: z.string().optional(),
         discountReason: z.string().optional(),
         associateId: z.string().optional(),
       }),

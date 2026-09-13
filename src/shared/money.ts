@@ -67,3 +67,43 @@ export function invoiceTotals(
 export function toMoneyString(value: MoneyInput, scale = 4): string {
   return money(value).toFixed(scale);
 }
+
+/** Percent of a base amount, rounded half-up (0 when percent <= 0). */
+export function percentAmount(value: MoneyInput, percent: MoneyInput): Decimal {
+  const pct = money(percent);
+  if (pct.lessThanOrEqualTo(0)) return money(0);
+  return roundMoney(money(value).mul(pct).div(100));
+}
+
+/**
+ * Discount on a single line. Percent applies to the extended price (unit price × qty),
+ * flat is an absolute amount — either or both may be given. Result is rounded and
+ * clamped to the extended price, never negative.
+ */
+export function itemDiscountAmount(input: {
+  unitPrice: MoneyInput;
+  qty: number;
+  flat?: MoneyInput;
+  percent?: MoneyInput;
+}): Decimal {
+  const extended = roundMoney(money(input.unitPrice).mul(input.qty));
+  const raw = money(input.flat ?? 0).plus(percentAmount(extended, input.percent ?? 0));
+  if (raw.lessThanOrEqualTo(0)) return money(0);
+  return roundMoney(Decimal.min(Decimal.max(raw, 0), extended));
+}
+
+/**
+ * Discount on the whole bill. Percent applies to the subtotal (before VAT), flat is
+ * an absolute amount — either or both may be given. Result is rounded and clamped to
+ * the subtotal, never negative.
+ */
+export function transactionDiscountAmount(input: {
+  subtotal: MoneyInput;
+  flat?: MoneyInput;
+  percent?: MoneyInput;
+}): Decimal {
+  const subtotal = roundMoney(input.subtotal);
+  const raw = money(input.flat ?? 0).plus(percentAmount(subtotal, input.percent ?? 0));
+  if (raw.lessThanOrEqualTo(0)) return money(0);
+  return roundMoney(Decimal.min(Decimal.max(raw, 0), subtotal));
+}
