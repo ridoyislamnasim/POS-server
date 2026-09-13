@@ -1,4 +1,4 @@
-import type { PlatformInvoice, PlatformInvoiceStatus, Prisma } from "@prisma/client";
+import type { PlatformInvoice, PlatformInvoiceStatus, Prisma, SubscriptionStatus } from "@prisma/client";
 import { prisma } from "../../lib/prisma.js";
 import { writeAudit } from "../../lib/audit.js";
 import { enqueueOutbox } from "../outbox/enqueue.js";
@@ -166,6 +166,190 @@ export async function getPlatformTenant(id: string) {
     },
     invoices: invoices.map(serializeInvoice),
   };
+}
+
+const SUBSCRIPTION_STATUSES: SubscriptionStatus[] = [
+  "TRIAL",
+  "ACTIVE",
+  "PAST_DUE",
+  "GRACE_PERIOD",
+  "SUSPENDED",
+  "CANCELLED",
+  "EXPIRED",
+];
+
+type TenantWithPlan = Prisma.TenantGetPayload<{ include: { plan: true } }>;
+
+function serializeTenantRow(t: TenantWithPlan) {
+  return {
+    id: t.id,
+    name: t.name,
+    country: t.country,
+    subscriptionStatus: t.subscriptionStatus,
+    apiAccessEnabled: t.apiAccessEnabled,
+    apiAccessDisabledAt: t.apiAccessDisabledAt,
+    apiAccessDisabledReason: t.apiAccessDisabledReason,
+    trialEnd: t.trialEnd,
+    plan: t.plan
+      ? { id: t.plan.id, name: t.plan.name, code: t.plan.code, price: String(t.plan.price), currency: t.plan.currency }
+      : null,
+    invoiceCount: 0,
+    unpaidCount: 0,
+    overdueCount: 0,
+    unpaidAmount: "0",
+  };
+}
+
+export async function createTenant(ctx: RequestContext, body: Record<string, unknown>) {
+  const name = String(body.name ?? "").trim();
+  if (!name) throw Object.assign(new Error("name required"), { code: "VALIDATION" });
+
+  const country = (String(body.country ?? "BD").trim() || "BD").toUpperCase().slice(0, 2);
+  const timezone = String(body.timezone ?? "Asia/Dhaka").trim() || "Asia/Dhaka";
+  const locale = String(body.locale ?? "en").trim().slice(0, 5) || "en";
+  const industryPack = String(body.industryPack ?? "FASHION").trim().toUpperCase() || "FASHION";
+
+  const plan = body.planId
+    ? await prisma.plan.findFirst({ where: { id: String(body.planId), active: true } })
+    : null;
+  if (body.planId && !plan) throw Object.assign(new Error("Plan not found"), { code: "NOT_FOUND" });
+
+  const rawStatus = String(body.subscriptionStatus ?? "TRIAL").toUpperCase() as SubscriptionStatus;
+  const subscriptionStatus = SUBSCRIPTION_STATUSES.includes(rawStatus) ? rawStatus : "TRIAL";
+
+  const trialStart = asDate(body.trialStart, subscriptionStatus === "TRIAL" ? new Date() : undefined);
+  const trialEnd = asDate(body.trialEnd);
+
+  const branchName = String(body.branchName ?? "").trim() || name;
+  const branchCode = (String(body.branchCode ?? "").trim() || "MAIN").toUpperCase().slice(0, 8);
+
+  const tenant = await prisma.$transaction(async (tx) => {
+    const row = await tx.tenant.create({
+      data: {
+        name,
+        industryPack,
+        country,
+        timezone,
+        locale,
+        planId: plan?.id ?? null,
+        subscriptionStatus,
+        trialStart,
+        trialEnd,
+        apiAccessEnabled: true,
+      },
+      include: { plan: true },
+    });
+
+    await tx.business.create({
+      data: { tenantId: row.id, name, currency: plan?.currency ?? "BDT" },
+    });
+
+    const loc = await tx.location.create({
+      data: { tenantId: row.id, type: "STORE", name: `${branchName} Floor` },
+    });
+    await tx.stockLocationChannel.create({
+      data: { tenantId: row.id, locationId: loc.id, channel: "STORE" },
+    });
+    const branch = await tx.branch.create({
+      data: { tenantId: row.id, locationId: loc.id, name: branchName, code: branchCode },
+    });
+    await tx.register.create({
+      data: { tenantId: row.id, branchId: branch.id, name: "Register 01" },
+    });
+    const year = new Date().getFullYear();
+    await tx.documentNumberSequence.create({
+      data: {
+        tenantId: row.id,
+        branchId: branch.id,
+        documentType: "INVOICE",
+        fiscalYear: year,
+        prefix: `${branchCode}-INV-${year}-`,
+      },
+    });
+
+    await tx.tenantSettings.create({
+      data: { tenantId: row.id, currency: plan?.currency ?? "BDT" },
+    });
+
+    return row;
+  });
+
+  await writeAudit({
+    ctx,
+    action: "platform.tenant.create",
+    entityType: "Tenant",
+    entityId: tenant.id,
+    after: { name, country, planId: plan?.id, subscriptionStatus, trialEnd },
+  });
+
+  return serializeTenantRow(tenant);
+}
+
+export async function updateTenant(ctx: RequestContext, id: string, body: Record<string, unknown>) {
+  const existing = await prisma.tenant.findUnique({ where: { id }, include: { plan: true } });
+  if (!existing) throw Object.assign(new Error("Tenant not found"), { code: "NOT_FOUND" });
+
+  const data: Prisma.TenantUpdateInput = {};
+  const before: Record<string, unknown> = {};
+
+  if (body.name !== undefined) {
+    const name = String(body.name ?? "").trim();
+    if (!name) throw Object.assign(new Error("name required"), { code: "VALIDATION" });
+    if (name !== existing.name) {
+      before.name = existing.name;
+      data.name = name;
+    }
+  }
+
+  if (body.country !== undefined) {
+    const country = (String(body.country ?? "").trim() || "BD").toUpperCase().slice(0, 2);
+    if (country !== existing.country) {
+      before.country = existing.country;
+      data.country = country;
+    }
+  }
+
+  if (body.subscriptionStatus !== undefined) {
+    const raw = String(body.subscriptionStatus).toUpperCase() as SubscriptionStatus;
+    const subscriptionStatus = SUBSCRIPTION_STATUSES.includes(raw) ? raw : undefined;
+    if (subscriptionStatus && subscriptionStatus !== existing.subscriptionStatus) {
+      before.subscriptionStatus = existing.subscriptionStatus;
+      data.subscriptionStatus = subscriptionStatus;
+    }
+  }
+
+  if ("planId" in body) {
+    const plan = body.planId
+      ? await prisma.plan.findFirst({ where: { id: String(body.planId), active: true } })
+      : null;
+    if (body.planId && !plan) throw Object.assign(new Error("Plan not found"), { code: "NOT_FOUND" });
+    if (plan?.id !== existing.planId) {
+      before.planId = existing.planId;
+      if (plan) data.plan = { connect: { id: plan.id } };
+      else data.plan = { disconnect: true };
+    }
+  }
+
+  if (body.trialEnd !== undefined) {
+    const next = String(body.trialEnd ?? "").trim() ? asDate(body.trialEnd) ?? null : null;
+    if (next?.getTime() !== existing.trialEnd?.getTime() || Boolean(next) !== Boolean(existing.trialEnd)) {
+      before.trialEnd = existing.trialEnd;
+      data.trialEnd = next;
+    }
+  }
+
+  if (!Object.keys(data).length) return serializeTenantRow(existing);
+
+  const row = await prisma.tenant.update({ where: { id }, data, include: { plan: true } });
+  await writeAudit({
+    ctx,
+    action: "platform.tenant.update",
+    entityType: "Tenant",
+    entityId: id,
+    before,
+    after: Object.fromEntries(Object.keys(before).map((k) => [k, row[k as keyof typeof row]])),
+  });
+  return serializeTenantRow(row);
 }
 
 export async function createInvoice(ctx: RequestContext, body: Record<string, unknown>) {

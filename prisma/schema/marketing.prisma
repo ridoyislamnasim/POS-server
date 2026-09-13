@@ -1,0 +1,62 @@
+model MarketingSite {
+  id String @id @default("default")
+
+  brandName   String @default("Universal POS")
+  tagline     String @default("The modern point-of-sale for your business")
+  logoUrl     String?
+
+  heroTitle    String @default("Run your business with confidence")
+  heroSubtitle String @default("A complete POS, inventory, and accounting platform built for modern retailers.")
+  heroCtaLabel String @default("Sign in")
+  heroCtaHref  String @default("/login")
+
+  supportEmail String?
+  supportPhone String?
+  whatsapp     String?
+  address      String?
+
+  seoTitle       String?
+  seoDescription String?
+
+  published Boolean @default(true)
+
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model MarketingFeature {
+  id        String @id @default(cuid())
+  sortOrder Int    @default(0)
+  title     String
+  body      String
+  icon      String @default("box")
+  active    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model MarketingLead {
+  id     String @id @default(cuid())
+  name   String
+  email  String
+  phone  String?
+  company String?
+  message String
+
+  status MarketingLeadStatus @default(NEW)
+  ip     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([email, createdAt])
+  @@index([status])
+}
+
+enum MarketingLeadStatus {
+  NEW
+  READ
+  ARCHIVED
+}

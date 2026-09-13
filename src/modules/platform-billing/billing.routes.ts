@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from "express";
+import { prisma } from "../../lib/prisma.js";
 import { fail, ok, okList } from "../../lib/envelope.js";
 import { requireAuth, requirePlatform, requireTenant, isPlatformActor } from "../../middleware/auth.js";
 import type { AuthedRequest } from "../../types.js";
@@ -8,6 +9,7 @@ import { createPdfDocument, drawPdf } from "../documents/invoice-pdf.js";
 import { mapPlatformInvoiceDocument } from "./billing.documents.js";
 import {
   createInvoice,
+  createTenant,
   getInvoice,
   getPlatformTenant,
   listInvoices,
@@ -16,6 +18,7 @@ import {
   sendReceipt,
   setInvoiceStatus,
   setTenantApiAccess,
+  updateTenant,
 } from "./billing.service.js";
 
 export const platformBillingRouter = Router();
@@ -32,15 +35,37 @@ function sendFail(res: Response, e: unknown) {
   return fail(res, code, err.message || "Request failed", status);
 }
 
+platformBillingRouter.get("/plans", requirePlatform, async (_req, res) => {
+  return ok(res, await prisma.plan.findMany({ where: { active: true }, orderBy: { price: "asc" } }));
+});
+
 platformBillingRouter.get("/tenants", requirePlatform, async (req, res) => {
   const { rows, pagination } = await listPlatformTenants(req.query as Record<string, unknown>);
   return okList(res, rows, pagination);
+});
+
+platformBillingRouter.post("/tenants", requirePlatform, async (req, res) => {
+  try {
+    const row = await createTenant(ctxOf(req), (req.body ?? {}) as Record<string, unknown>);
+    return ok(res, row, undefined, 201);
+  } catch (e) {
+    return sendFail(res, e);
+  }
 });
 
 platformBillingRouter.get("/tenants/:id", requirePlatform, async (req, res) => {
   const data = await getPlatformTenant(String(req.params.id));
   if (!data) return fail(res, "NOT_FOUND", "Tenant not found", 404);
   return ok(res, data);
+});
+
+platformBillingRouter.patch("/tenants/:id", requirePlatform, async (req, res) => {
+  try {
+    const row = await updateTenant(ctxOf(req), String(req.params.id), (req.body ?? {}) as Record<string, unknown>);
+    return ok(res, row);
+  } catch (e) {
+    return sendFail(res, e);
+  }
 });
 
 platformBillingRouter.post("/tenants/:id/api-access", requirePlatform, async (req, res) => {

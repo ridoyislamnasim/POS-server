@@ -44,6 +44,9 @@ type VariantPick = {
 };
 
 async function wipe() {
+  await prisma.marketingLead.deleteMany();
+  await prisma.marketingFeature.deleteMany();
+  await prisma.marketingSite.deleteMany();
   await prisma.saleReturnExchange.deleteMany();
   await prisma.saleReturnItem.deleteMany();
   await prisma.loginAttempt.deleteMany();
@@ -189,6 +192,76 @@ async function main() {
       trialEnd: bizDate(-26),
       planId: growth.id,
     },
+  });
+
+  await prisma.marketingSite.upsert({
+    where: { id: "default" },
+    update: {},
+    create: {
+      id: "default",
+      brandName: "Universal POS",
+      tagline: "The modern point-of-sale for your business",
+      heroTitle: "Run your business with confidence",
+      heroSubtitle:
+        "Universal POS brings sales, inventory, and accounting into one fast app — so you can spend less time on paperwork and more time serving customers.",
+      heroCtaLabel: "Sign in",
+      heroCtaHref: "/login",
+      supportEmail: "hello@universalpos.app",
+      supportPhone: "+8801000000000",
+      whatsapp: "+8801000000000",
+      address: "Dhaka, Bangladesh",
+      seoTitle: "Universal POS — Point of Sale, Inventory & Accounting",
+      seoDescription:
+        "A complete point-of-sale, inventory, and accounting platform for modern retailers. Cashier, branches, reports, loyalty, and e-commerce in one app.",
+      published: true,
+    },
+  });
+
+  await prisma.marketingFeature.createMany({
+    data: [
+      {
+        sortOrder: 1,
+        title: "Lightning-fast checkout",
+        body: "Tap through sales with keyboard shortcuts, barcode scans, and instant payment splits. Your queue moves faster, your staff stays calm.",
+        icon: "zap",
+        active: true,
+      },
+      {
+        sortOrder: 2,
+        title: "Real-time inventory",
+        body: "Every sale, return, receipt, and transfer updates stock instantly across branches and warehouses — no more manual counting.",
+        icon: "boxes",
+        active: true,
+      },
+      {
+        sortOrder: 3,
+        title: "Built-in accounting",
+        body: "Income, expenses, payments, dues, and daily closing flow straight into clean reports and a live profit & loss view.",
+        icon: "chart",
+        active: true,
+      },
+      {
+        sortOrder: 4,
+        title: "Multi-branch & cashier shifts",
+        body: "Run unlimited outlets with per-register shifts, cash drawer control, and oversight that rolls up to headquarters.",
+        icon: "building",
+        active: true,
+      },
+      {
+        sortOrder: 5,
+        title: "Loyalty & customers",
+        body: "Track regulars, award loyalty points, and manage credit accounts — your customers feel valued, and they keep coming back.",
+        icon: "heart",
+        active: true,
+      },
+      {
+        sortOrder: 6,
+        title: "E-commerce & WhatsApp",
+        body: "Connect your storefront, marketplace orders, and invoice your customers over WhatsApp with zero retyping.",
+        icon: "globe",
+        active: true,
+      },
+    ],
   });
 
   await prisma.tenantSettings.create({

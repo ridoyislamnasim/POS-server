@@ -17,6 +17,7 @@
 //   settings.prisma   tenant settings, templates, API keys, backups
 //   billing.prisma    platform invoices + payment events
 //   sms.prisma        tenant SMS settings, templates, logs, usage
+//   marketing.prisma  public marketing site, features, leads
 
 generator client {
   provider = "prisma-client-js"

@@ -11,10 +11,30 @@ import { requireTenantId, visibleUsersWhere } from "../../lib/scope.js";
 export const usersRouter = Router();
 usersRouter.use(requireAuth, requireTenant);
 
-async function resolveRole(tenantId: string, roleKey: string) {
+async function resolveScopedRole(tenantId: string, roleKey: string) {
   const tenantRole = await prisma.role.findFirst({ where: { key: roleKey, tenantId } });
   if (tenantRole) return tenantRole;
   return prisma.role.findFirst({ where: { key: roleKey, tenantId: null } });
+}
+
+/** Tenant owners always get a tenant-scoped role holding every permission. */
+async function ensureTenantOwnerRole(tenantId: string) {
+  const existing = await prisma.role.findFirst({ where: { key: "TENANT_OWNER", tenantId } });
+  if (existing) return existing;
+  const permissions = await prisma.permission.findMany({ select: { id: true } });
+  return prisma.role.create({
+    data: {
+      tenantId,
+      key: "TENANT_OWNER",
+      name: "Tenant owner",
+      permissions: { create: permissions.map((p) => ({ permissionId: p.id })) },
+    },
+  });
+}
+
+async function resolveAssignableRole(tenantId: string, roleKey: string) {
+  if (roleKey === "TENANT_OWNER") return ensureTenantOwnerRole(tenantId);
+  return resolveScopedRole(tenantId, roleKey);
 }
 
 /** Shop tenant for this user. Tenant staff never resolve platform-only memberships. */
@@ -91,23 +111,38 @@ usersRouter.get("/", requirePermission("user.manage"), async (req, res) => {
 
 usersRouter.post("/", requirePermission("user.create"), async (req, res) => {
   const ctx = (req as AuthedRequest).ctx;
-  const { name, email, password, roleKey, branchIds } = req.body ?? {};
+  const { name, email, password, roleKey, branchIds, tenantId } = req.body ?? {};
   if (!name || !email || !password || !roleKey) return fail(res, "VALIDATION", "Missing fields");
   if (roleKey === "PLATFORM_SUPER_ADMIN" && !ctx.isPlatform) {
     return fail(res, "FORBIDDEN", "Cannot assign platform role", 403);
   }
-  const role = await resolveRole(ctx.tenantId!, roleKey);
+  if (roleKey === "TENANT_OWNER" && !ctx.isPlatform) {
+    return fail(res, "FORBIDDEN", "Only the platform super admin can assign the tenant owner role", 403);
+  }
+  if (tenantId && !ctx.isPlatform) {
+    return fail(res, "FORBIDDEN", "Cannot choose a tenant", 403);
+  }
+  if (roleKey === "TENANT_OWNER" && !tenantId) {
+    return fail(res, "VALIDATION", "tenantId is required for a tenant owner");
+  }
+
+  const targetTenantId = tenantId && ctx.isPlatform ? String(tenantId) : ctx.tenantId!;
+  const target = await prisma.tenant.findUnique({ where: { id: targetTenantId }, select: { id: true } });
+  if (!target) return fail(res, "NOT_FOUND", "Tenant not found", 404);
+
+  const role = await resolveAssignableRole(targetTenantId, roleKey);
   if (!role) return fail(res, "NOT_FOUND", "Role not found", 404);
 
+  const isOwner = roleKey === "TENANT_OWNER";
   const user = await prisma.user.create({
     data: {
       name,
       email: String(email).toLowerCase(),
       passwordHash: await bcrypt.hash(password, 10),
-      tenants: { create: { tenantId: ctx.tenantId! } },
+      tenants: { create: { tenantId: targetTenantId, allBranches: isOwner } },
       roles: { create: { roleId: role.id } },
       branches: {
-        create: (branchIds as string[] | undefined)?.map((branchId) => ({ branchId })) ?? [],
+        create: isOwner ? [] : (branchIds as string[] | undefined)?.map((branchId) => ({ branchId })) ?? [],
       },
     },
     include: { roles: { include: { role: true } }, branches: true },
@@ -115,17 +150,17 @@ usersRouter.post("/", requirePermission("user.create"), async (req, res) => {
   const { passwordHash: _, ...safe } = user;
   await prisma.auditLog.create({
     data: {
-      tenantId: ctx.tenantId,
+      tenantId: targetTenantId,
       userId: ctx.userId,
       actorUserId: ctx.userId,
       action: "user.create",
       entityType: "User",
       entityId: user.id,
-      after: { email: user.email, roleKey },
+      after: { email: user.email, roleKey, tenantId: targetTenantId },
     },
   });
   await enqueueOutbox(prisma, {
-    tenantId: ctx.tenantId!,
+    tenantId: targetTenantId,
     type: "STAFF_CREATED",
     aggregateId: user.id,
     payload: { name: user.name, targetUserId: user.id, entityType: "User", entityId: user.id },
@@ -138,7 +173,13 @@ usersRouter.get("/roles", requirePermission("user.manage"), async (req, res) => 
   const roles = await prisma.role.findMany({
     where: { OR: [{ tenantId: ctx.tenantId! }, { tenantId: null }] },
   });
-  return ok(res, roles.filter((r) => r.key !== "PLATFORM_SUPER_ADMIN" || ctx.isPlatform));
+  const visible = roles.filter(
+    (r) => (r.key !== "PLATFORM_SUPER_ADMIN" && r.key !== "TENANT_OWNER") || ctx.isPlatform,
+  );
+  if (ctx.isPlatform && !visible.some((r) => r.key === "TENANT_OWNER")) {
+    visible.push({ id: "tenant-owner", tenantId: ctx.tenantId!, key: "TENANT_OWNER", name: "Tenant owner" });
+  }
+  return ok(res, visible);
 });
 
 usersRouter.get("/:id", requirePermission("user.manage"), async (req, res) => {
@@ -173,37 +214,66 @@ usersRouter.get("/:id", requirePermission("user.manage"), async (req, res) => {
 usersRouter.patch("/:id", requirePermission("user.manage"), async (req, res) => {
   const ctx = (req as AuthedRequest).ctx;
   const userId = String(req.params.id);
-  const tenantId = await requireVisibleUser(ctx, userId);
-  if (!tenantId) return fail(res, "NOT_FOUND", "User not in tenant", 404);
-  const { name, email, password, roleKey, branchIds, status } = req.body ?? {};
+  const currentTenant = await requireVisibleUser(ctx, userId);
+  if (!currentTenant) return fail(res, "NOT_FOUND", "User not in tenant", 404);
+  const { name, email, password, roleKey, branchIds, status, tenantId: moveTenantId } = req.body ?? {};
   if (roleKey === "PLATFORM_SUPER_ADMIN" && !ctx.isPlatform) {
     return fail(res, "FORBIDDEN", "Cannot assign platform role", 403);
+  }
+  if (roleKey === "TENANT_OWNER" && !ctx.isPlatform) {
+    return fail(res, "FORBIDDEN", "Only the platform super admin can assign the tenant owner role", 403);
+  }
+  if (moveTenantId && !ctx.isPlatform) {
+    return fail(res, "FORBIDDEN", "Cannot choose a tenant", 403);
   }
   if (status && status !== "ACTIVE" && status !== "DEACTIVATED") {
     return fail(res, "VALIDATION", "Invalid status");
   }
-  if (roleKey) {
-    const role = await resolveRole(tenantId, roleKey);
-    if (!role) return fail(res, "NOT_FOUND", "Role not found", 404);
-    await prisma.userRole.deleteMany({
-      where: {
-        userId,
-        role: {
-          key: { not: "PLATFORM_SUPER_ADMIN" },
-          OR: [{ tenantId }, { tenantId: null }],
-        },
-      },
+
+  const targetTenantId = moveTenantId && ctx.isPlatform ? String(moveTenantId) : currentTenant;
+  if (moveTenantId && ctx.isPlatform) {
+    const target = await prisma.tenant.findUnique({ where: { id: targetTenantId }, select: { id: true } });
+    if (!target) return fail(res, "NOT_FOUND", "Tenant not found", 404);
+  }
+
+  if (roleKey && !ctx.isPlatform) {
+    const targetRole = await prisma.userRole.findFirst({
+      where: { userId },
+      include: { role: { select: { key: true } } },
     });
+    if (targetRole?.role.key === "TENANT_OWNER" && targetRole.role.key !== roleKey) {
+      return fail(res, "FORBIDDEN", "The tenant owner role cannot be changed", 403);
+    }
+  }
+
+  if (roleKey === "TENANT_OWNER" && ctx.isPlatform) {
+    await prisma.userTenant.updateMany({
+      where: { userId, tenantId: targetTenantId },
+      data: { allBranches: true },
+    });
+  }
+  if (ctx.isPlatform && targetTenantId !== currentTenant) {
+    await prisma.userTenant.deleteMany({ where: { userId, isPlatform: false } });
+    await prisma.userTenant.create({
+      data: { userId, tenantId: targetTenantId, allBranches: roleKey === "TENANT_OWNER" },
+    });
+    await prisma.userBranch.deleteMany({ where: { userId } });
+  }
+
+  if (roleKey) {
+    const role = await resolveAssignableRole(targetTenantId, roleKey);
+    if (!role) return fail(res, "NOT_FOUND", "Role not found", 404);
+    await prisma.userRole.deleteMany({ where: { userId } });
     await prisma.userRole.create({ data: { userId, roleId: role.id } });
   }
   if (Array.isArray(branchIds)) {
     const ids = (branchIds as string[]).filter(Boolean);
     const owned = await prisma.branch.findMany({
-      where: { tenantId, id: { in: ids } },
+      where: { tenantId: targetTenantId, id: { in: ids } },
       select: { id: true },
     });
     await prisma.userBranch.deleteMany({
-      where: { userId, branch: { tenantId } },
+      where: { userId, branch: { tenantId: targetTenantId } },
     });
     if (owned.length) {
       await prisma.userBranch.createMany({ data: owned.map((b) => ({ userId, branchId: b.id })) });
@@ -222,17 +292,25 @@ usersRouter.patch("/:id", requirePermission("user.manage"), async (req, res) => 
   const { passwordHash: _, ...safe } = user;
   await prisma.auditLog.create({
     data: {
-      tenantId: ctx.tenantId,
+      tenantId: targetTenantId,
       userId: ctx.userId,
       actorUserId: ctx.userId,
       action: "user.update",
       entityType: "User",
       entityId: user.id,
+      after: Object.fromEntries(
+        [
+          ["name", name],
+          ["email", email && String(email).toLowerCase()],
+          ["roleKey", roleKey],
+          ["tenantId", targetTenantId !== currentTenant ? targetTenantId : undefined],
+        ].filter(([, v]) => v != null),
+      ),
     },
   });
   if (roleKey) {
     await enqueueOutbox(prisma, {
-      tenantId: ctx.tenantId!,
+      tenantId: targetTenantId,
       type: "ROLE_CHANGED",
       aggregateId: user.id,
       payload: { name: user.name, targetUserId: user.id, roleKey, entityType: "User", entityId: user.id },
@@ -240,7 +318,7 @@ usersRouter.patch("/:id", requirePermission("user.manage"), async (req, res) => 
   }
   if (Array.isArray(branchIds)) {
     await enqueueOutbox(prisma, {
-      tenantId: ctx.tenantId!,
+      tenantId: targetTenantId,
       type: "BRANCH_CHANGED",
       aggregateId: user.id,
       payload: { name: user.name, targetUserId: user.id, entityType: "User", entityId: user.id },
@@ -248,7 +326,7 @@ usersRouter.patch("/:id", requirePermission("user.manage"), async (req, res) => 
   }
   if (status === "DEACTIVATED") {
     await enqueueOutbox(prisma, {
-      tenantId: ctx.tenantId!,
+      tenantId: targetTenantId,
       type: "STAFF_DEACTIVATED",
       aggregateId: user.id,
       payload: { name: user.name, targetUserId: user.id, entityType: "User", entityId: user.id },
