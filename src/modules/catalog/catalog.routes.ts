@@ -12,6 +12,7 @@ import { hasPermission } from "../../lib/scope.js";
 import {
   assertUniqueBarcode,
   assertUniqueProductCode,
+  assertUniqueSku,
   createVariantRecord,
   generateFromAxes,
   productInclude,
@@ -951,6 +952,83 @@ catalogRouter.patch("/products/:id", manage, async (req, res) => {
             qty: String(b.qty ?? 1),
           })),
         });
+      }
+    }
+    if (Array.isArray(body.variants) && product.type === "VARIABLE") {
+      type VariantRowInput = VariantInput & { id?: string };
+      const rows = body.variants as VariantRowInput[];
+      const saved = await prisma.productVariant.findMany({
+        where: { productId: existing.id, tenantId: ctx.tenantId! },
+        include: { barcodes: { where: { active: true } } },
+      });
+      const byId = new Map(saved.map((v) => [v.id, v]));
+      for (const row of rows) {
+        const status = String(row.status ?? "ACTIVE").toUpperCase() === "INACTIVE" ? "INACTIVE" : "ACTIVE";
+        if (row.id && byId.has(row.id)) {
+          const cur = byId.get(row.id)!;
+          const nextSku = row.sku ? String(row.sku).toUpperCase() : cur.sku;
+          if (nextSku !== cur.sku) await assertUniqueSku(ctx.tenantId!, nextSku, cur.id);
+          await prisma.productVariant.update({
+            where: { id: cur.id },
+            data: {
+              sku: nextSku,
+              ...(row.price !== undefined ? { price: String(row.price) } : {}),
+              ...(row.cost !== undefined ? { cost: String(row.cost) } : {}),
+              ...(row.discount !== undefined ? { discount: String(row.discount) } : {}),
+              ...(row.minStock !== undefined ? { minStock: String(row.minStock) } : {}),
+              ...(row.weight !== undefined ? { weight: row.weight === "" || row.weight == null ? null : String(row.weight) } : {}),
+              ...(row.imageUrl !== undefined ? { imageUrl: row.imageUrl || null } : {}),
+              status,
+            },
+          });
+          const newCode = row.barcode != null ? String(row.barcode).trim() : "";
+          const primary = cur.barcodes.find((b) => b.primary) ?? cur.barcodes[0];
+          if (newCode && (!primary || primary.code !== newCode)) {
+            await assertUniqueBarcode(ctx.tenantId!, newCode, primary?.id);
+            if (primary) {
+              await prisma.barcode.update({ where: { id: primary.id }, data: { code: newCode, primary: true } });
+            } else {
+              await prisma.barcode.create({
+                data: { tenantId: ctx.tenantId!, variantId: cur.id, code: newCode, kind: "CODE128", primary: true },
+              });
+            }
+          }
+        } else if (row.optionIds?.length) {
+          // New combination added in edit mode. Opening stock applies only to
+          // brand-new variants — existing rows keep their stock ledger intact.
+          const rec = await createVariantRecord(
+            ctx,
+            { id: existing.id, code: product.code, unitId: product.unitId, trackInventory: product.trackInventory },
+            {
+              ...(row as VariantInput),
+              status,
+              openingStock: Array.isArray(row.openingStock) ? row.openingStock : [],
+            },
+          );
+          await prisma.productVariant.update({
+            where: { id: rec.id },
+            data: {
+              ...(row.price !== undefined ? { price: String(row.price) } : {}),
+              ...(row.cost !== undefined ? { cost: String(row.cost) } : {}),
+              ...(row.discount !== undefined ? { discount: String(row.discount) } : {}),
+              ...(row.minStock !== undefined ? { minStock: String(row.minStock) } : {}),
+              ...(row.weight !== undefined ? { weight: row.weight === "" || row.weight == null ? null : String(row.weight) } : {}),
+              ...(row.imageUrl !== undefined ? { imageUrl: row.imageUrl || null } : {}),
+              status,
+            },
+          });
+        }
+      }
+      if (Array.isArray(body.removedVariantIds)) {
+        const ids = (body.removedVariantIds as unknown[]).filter((x): x is string => typeof x === "string" && byId.has(x));
+        for (const id of ids) {
+          await prisma.stockMovement.deleteMany({ where: { variantId: id } });
+          await prisma.stock.deleteMany({ where: { variantId: id } });
+          await prisma.barcode.deleteMany({ where: { variantId: id } });
+          await prisma.variantAttributeValue.deleteMany({ where: { variantId: id } });
+          await prisma.productImage.updateMany({ where: { variantId: id }, data: { variantId: null } });
+          await prisma.productVariant.delete({ where: { id } });
+        }
       }
     }
     return ok(res, await prisma.product.findFirst({ where: { id: existing.id }, include: productInclude }));
