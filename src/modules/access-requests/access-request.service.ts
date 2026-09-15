@@ -57,7 +57,7 @@ export async function createRequest(
       requestedPlanId: data.requestedPlanId ?? null,
       currentValue: data.currentValue ?? null,
       requestedValue: data.requestedValue ?? null,
-      reason: data.reason,
+      reason: data.reason ?? "",
       expiresAt: data.expiresAt ?? null,
     },
   });
@@ -114,6 +114,7 @@ export async function listAllRequests(filters: {
       where,
       include: {
         tenant: { include: { plan: true } },
+        requestedPlan: true,
       },
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * pageSize,

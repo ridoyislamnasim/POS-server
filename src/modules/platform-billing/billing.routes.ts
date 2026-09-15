@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { prisma } from "../../lib/prisma.js";
 import { fail, ok, okList } from "../../lib/envelope.js";
-import { requireAuth, requirePlatform, requireTenant, isPlatformActor } from "../../middleware/auth.js";
+import { requireAuth, requirePermission, requirePlatform, requireTenant, isPlatformActor } from "../../middleware/auth.js";
 import type { AuthedRequest } from "../../types.js";
 import { loadLogo } from "../documents/documents.service.js";
 import { renderInvoiceHtml } from "../documents/invoice-html.js";
@@ -18,6 +18,7 @@ import {
   sendReceipt,
   setInvoiceStatus,
   setTenantApiAccess,
+  updateInvoice,
   updateTenant,
 } from "./billing.service.js";
 
@@ -86,7 +87,7 @@ platformBillingRouter.post("/tenants/:id/api-access", requirePlatform, async (re
   }
 });
 
-platformBillingRouter.get("/my-invoices", requireTenant, async (req, res) => {
+platformBillingRouter.get("/my-invoices", requireTenant, requirePermission("plan.manage"), async (req, res) => {
   const ctx = ctxOf(req);
   const { rows, pagination } = await listInvoices(req.query as Record<string, unknown>, ctx.tenantId!);
   return okList(res, rows, pagination);
@@ -104,6 +105,15 @@ platformBillingRouter.post("/invoices", requirePlatform, async (req, res) => {
 platformBillingRouter.get("/invoices", requirePlatform, async (req, res) => {
   const { rows, pagination } = await listInvoices(req.query as Record<string, unknown>);
   return okList(res, rows, pagination);
+});
+
+platformBillingRouter.patch("/invoices/:id", requirePlatform, async (req, res) => {
+  try {
+    const row = await updateInvoice(ctxOf(req), String(req.params.id), (req.body ?? {}) as Record<string, unknown>);
+    return ok(res, row);
+  } catch (e) {
+    return sendFail(res, e);
+  }
 });
 
 platformBillingRouter.post("/invoices/:id/send", requirePlatform, async (req, res) => {

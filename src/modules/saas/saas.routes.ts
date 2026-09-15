@@ -18,10 +18,6 @@ function ctxOf(req: Request) {
   return (req as AuthedRequest).ctx;
 }
 
-saasRouter.get("/plans", requirePermission("plan.manage"), async (_req, res) => {
-  return ok(res, await prisma.plan.findMany({ orderBy: { price: "asc" } }));
-});
-
 saasRouter.get("/subscription", requirePermission("plan.manage"), async (req, res) => {
   const ctx = ctxOf(req);
   const tenant = await prisma.tenant.findUnique({
@@ -141,4 +137,21 @@ saasRouter.get("/backups", requirePermission("backup.manage"), async (req, res) 
     count: () => prisma.backupRecord.count({ where }),
   });
   return okList(res, rows, pagination);
+});
+
+saasRouter.get("/backups/:id/download", requirePermission("backup.manage"), async (req, res) => {
+  const ctx = ctxOf(req);
+  const tid = tenantId(ctx);
+  const rec = await prisma.backupRecord.findFirst({ where: { id: String(req.params.id), tenantId: tid } });
+  if (!rec) return fail(res, "NOT_FOUND", "Backup not found", 404);
+
+  const payload = {
+    tenant: await prisma.tenant.findUnique({ where: { id: tid }, include: { businesses: true, settings: true, plan: true } }),
+    branches: await prisma.branch.findMany({ where: { tenantId: tid } }),
+    customers: await prisma.customer.findMany({ where: { tenantId: tid } }),
+    suppliers: await prisma.supplier.findMany({ where: { tenantId: tid } }),
+    products: await prisma.product.findMany({ where: { tenantId: tid }, include: { variants: true } }),
+    exportedAt: rec.createdAt.toISOString(),
+  };
+  return ok(res, payload);
 });

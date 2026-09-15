@@ -123,8 +123,8 @@ describe("platform tenant billing", () => {
     expect(mine.body.data.some((r: { id: string }) => r.id === invoiceId)).toBe(true);
 
     const theirs = await request(app).get("/api/v1/platform-billing/my-invoices").set(auth(other));
-    expect(theirs.status).toBe(200);
-    expect(theirs.body.data.some((r: { id: string }) => r.id === invoiceId)).toBe(false);
+    // Cashiers without plan.manage can't list platform bills at all.
+    expect(theirs.status).toBe(403);
 
     const stolen = await request(app).get(`/api/v1/platform-billing/invoices/${invoiceId}/pdf`).set(auth(other));
     expect(stolen.status).toBe(403);

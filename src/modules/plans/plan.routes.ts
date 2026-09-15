@@ -49,6 +49,7 @@ planRouter.patch("/:id", async (req, res) => {
   if (!existing) return fail(res, "NOT_FOUND", "Plan not found", 404);
 
   const data: Record<string, unknown> = {};
+  if (req.body?.code !== undefined) data.code = String(req.body.code).toUpperCase();
   if (req.body?.name !== undefined) data.name = req.body.name;
   if (req.body?.description !== undefined) data.description = req.body.description;
   if (req.body?.interval !== undefined) data.interval = req.body.interval;
@@ -60,6 +61,19 @@ planRouter.patch("/:id", async (req, res) => {
 
   const plan = await updatePlan(id, data);
   await writeAudit({ ctx, action: "plan.update", entityType: "Plan", entityId: id, before: { name: existing.name, price: existing.price }, after: data });
+  return ok(res, plan);
+});
+
+// Feature comparison matrix
+planRouter.get("/comparison", async (_req, res) => {
+  const comparison = await getFeatureComparison();
+  return ok(res, comparison);
+});
+
+// Get single plan with limits and features
+planRouter.get("/:id", async (req, res) => {
+  const plan = await getPlanWithLimitsAndFeatures(req.params.id);
+  if (!plan) return fail(res, "NOT_FOUND", "Plan not found", 404);
   return ok(res, plan);
 });
 
@@ -109,10 +123,4 @@ planRouter.patch("/:id/features", async (req, res) => {
 
   const updated = await getPlanWithLimitsAndFeatures(id);
   return ok(res, updated?.planFeatures ?? []);
-});
-
-// Feature comparison matrix
-planRouter.get("/comparison", async (_req, res) => {
-  const comparison = await getFeatureComparison();
-  return ok(res, comparison);
 });

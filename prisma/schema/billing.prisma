@@ -10,6 +10,10 @@ model PlatformInvoice {
   dueDate     DateTime
   amount      Decimal               @db.Decimal(19, 4)
   currency    String                @default("BDT")
+  subtotal    Decimal?              @db.Decimal(19, 4)
+  discountType   String             @default("NONE")
+  discountValue  Decimal            @default(0) @db.Decimal(19, 4)
+  discountAmount Decimal            @default(0) @db.Decimal(19, 4)
   status      PlatformInvoiceStatus @default(PENDING)
   sentAt      DateTime?
   paidAt      DateTime?

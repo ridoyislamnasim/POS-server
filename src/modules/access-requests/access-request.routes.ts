@@ -41,8 +41,8 @@ tenantRequestRouter.post("/", requirePermission("tenant.access_request.create"),
   if (type !== "PLAN_CHANGE") {
     return fail(res, "VALIDATION", "Only plan change requests are allowed");
   }
-  if (!requestedPlanId || !reason) {
-    return fail(res, "VALIDATION", "requestedPlanId and reason required");
+  if (!requestedPlanId) {
+    return fail(res, "VALIDATION", "requestedPlanId required");
   }
 
   // Backend role check: must be Tenant Owner

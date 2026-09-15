@@ -39,14 +39,16 @@ function lineItems(invoice: PlatformInvoice) {
     });
   }
   const period = `${dateLabel(invoice.periodStart)} – ${dateLabel(invoice.periodEnd)}`;
+  const subtotalNum = Number((invoice as { subtotal?: unknown }).subtotal ?? invoice.amount) || 0;
+  const discountNum = Number((invoice as { discountAmount?: unknown }).discountAmount ?? 0) || 0;
   return [
     {
       name: `Platform subscription ${period}`,
       sku: invoice.number,
       variant: "",
       qty: "1",
-      unitPrice: money(invoice.amount),
-      discount: "0.00",
+      unitPrice: money(subtotalNum),
+      discount: money(discountNum),
       tax: "0.00",
       taxRate: "0",
       lineTotal: money(invoice.amount),
@@ -57,6 +59,8 @@ function lineItems(invoice: PlatformInvoice) {
 export function mapPlatformInvoiceDocument(invoice: InvoiceWithTenant, kind: "invoice" | "receipt"): DocumentPayload {
   const business = invoice.tenant.businesses?.[0];
   const amount = money(invoice.amount);
+  const subtotalVal = money((invoice as { subtotal?: unknown }).subtotal ?? invoice.amount);
+  const discountVal = money((invoice as { discountAmount?: unknown }).discountAmount ?? 0);
   const paid = invoice.status === "PAID" ? amount : "0.00";
   const due = invoice.status === "PAID" ? "0.00" : amount;
   const issuerName = process.env.PLATFORM_ISSUER_NAME ?? "POS Platform";
@@ -88,8 +92,8 @@ export function mapPlatformInvoiceDocument(invoice: InvoiceWithTenant, kind: "in
     },
     partyLabel: "Bill to",
     lines: lineItems(invoice),
-    subtotal: amount,
-    discount: "0.00",
+    subtotal: subtotalVal,
+    discount: discountVal,
     tax: "0.00",
     total: amount,
     paid,

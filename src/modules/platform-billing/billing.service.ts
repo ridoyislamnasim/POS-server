@@ -85,7 +85,44 @@ export function serializeInvoice(row: PlatformInvoice | InvoiceWithRelations) {
   return {
     ...row,
     amount: String(row.amount),
+    subtotal: row.subtotal != null ? String(row.subtotal) : null,
+    discountValue: String((row as { discountValue?: unknown }).discountValue ?? 0),
+    discountAmount: String((row as { discountAmount?: unknown }).discountAmount ?? 0),
   };
+}
+
+export type TenantDiscountType = "NONE" | "PERCENT" | "FLAT";
+
+export function parseDiscountType(value: unknown): TenantDiscountType {
+  const s = String(value ?? "NONE").toUpperCase();
+  if (s === "PERCENT" || s === "%") return "PERCENT";
+  if (s === "FLAT" || s === "AMOUNT" || s === "FIXED") return "FLAT";
+  return "NONE";
+}
+
+export function parseDiscountValue(value: unknown): number {
+  const n = Number(value ?? 0);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return n;
+}
+
+export function calcDiscountAmount(subtotal: number, type: TenantDiscountType, value: number) {
+  const base = Number.isFinite(subtotal) && subtotal > 0 ? subtotal : 0;
+  if (type === "PERCENT") {
+    const pct = Math.min(100, Math.max(0, value));
+    return Math.min(base, (base * pct) / 100);
+  }
+  if (type === "FLAT") return Math.min(base, Math.max(0, value));
+  return 0;
+}
+
+function normalizeTenantDiscount(body: Record<string, unknown>) {
+  const type = parseDiscountType(body.discountType);
+  let value = parseDiscountValue(body.discountValue ?? body.discountPercent ?? body.discountAmount);
+  if (type === "PERCENT") value = Math.min(100, value);
+  if (type === "NONE") value = 0;
+  const reason = body.discountReason != null && String(body.discountReason).trim() ? String(body.discountReason).trim().slice(0, 200) : null;
+  return { type, value, reason };
 }
 
 export async function listPlatformTenants(query: Record<string, unknown>) {
@@ -136,6 +173,9 @@ export async function listPlatformTenants(query: Record<string, unknown>) {
       apiAccessDisabledAt: t.apiAccessDisabledAt,
       apiAccessDisabledReason: t.apiAccessDisabledReason,
       trialEnd: t.trialEnd,
+      discountType: (t as { discountType?: string }).discountType ?? "NONE",
+      discountValue: String((t as { discountValue?: unknown }).discountValue ?? 0),
+      discountReason: (t as { discountReason?: string | null }).discountReason ?? null,
       plan: t.plan ? { id: t.plan.id, name: t.plan.name, code: t.plan.code, price: String(t.plan.price), currency: t.plan.currency } : null,
       invoiceCount: t._count.platformInvoices,
       unpaidCount: unpaidByTenant.get(t.id)?.unpaidCount ?? 0,
@@ -190,6 +230,9 @@ function serializeTenantRow(t: TenantWithPlan) {
     apiAccessDisabledAt: t.apiAccessDisabledAt,
     apiAccessDisabledReason: t.apiAccessDisabledReason,
     trialEnd: t.trialEnd,
+    discountType: (t as { discountType?: string }).discountType ?? "NONE",
+    discountValue: String((t as { discountValue?: unknown }).discountValue ?? 0),
+    discountReason: (t as { discountReason?: string | null }).discountReason ?? null,
     plan: t.plan
       ? { id: t.plan.id, name: t.plan.name, code: t.plan.code, price: String(t.plan.price), currency: t.plan.currency }
       : null,
@@ -220,6 +263,11 @@ export async function createTenant(ctx: RequestContext, body: Record<string, unk
   const trialStart = asDate(body.trialStart, subscriptionStatus === "TRIAL" ? new Date() : undefined);
   const trialEnd = asDate(body.trialEnd);
 
+  const discount = normalizeTenantDiscount(body);
+  if (discount.type === "PERCENT" && discount.value > 100) {
+    throw Object.assign(new Error("discount percent must be 0-100"), { code: "VALIDATION" });
+  }
+
   const branchName = String(body.branchName ?? "").trim() || name;
   const branchCode = (String(body.branchCode ?? "").trim() || "MAIN").toUpperCase().slice(0, 8);
 
@@ -236,6 +284,9 @@ export async function createTenant(ctx: RequestContext, body: Record<string, unk
         trialStart,
         trialEnd,
         apiAccessEnabled: true,
+        discountType: discount.type,
+        discountValue: discount.value.toFixed(4),
+        discountReason: discount.reason,
       },
       include: { plan: true },
     });
@@ -279,7 +330,7 @@ export async function createTenant(ctx: RequestContext, body: Record<string, unk
     action: "platform.tenant.create",
     entityType: "Tenant",
     entityId: tenant.id,
-    after: { name, country, planId: plan?.id, subscriptionStatus, trialEnd },
+    after: { name, country, planId: plan?.id, subscriptionStatus, trialEnd, discountType: discount.type, discountValue: discount.value },
   });
 
   return serializeTenantRow(tenant);
@@ -338,6 +389,27 @@ export async function updateTenant(ctx: RequestContext, id: string, body: Record
     }
   }
 
+  if (body.discountType !== undefined || body.discountValue !== undefined || body.discountReason !== undefined) {
+    const current = {
+      discountType: (existing as { discountType?: string }).discountType ?? "NONE",
+      discountValue: Number((existing as { discountValue?: unknown }).discountValue ?? 0),
+      discountReason: (existing as { discountReason?: string | null }).discountReason ?? null,
+    };
+    const next = normalizeTenantDiscount({
+      discountType: body.discountType ?? current.discountType,
+      discountValue: body.discountValue ?? current.discountValue,
+      discountReason: body.discountReason ?? current.discountReason ?? undefined,
+    });
+    if (next.type !== current.discountType || next.value !== current.discountValue || next.reason !== current.discountReason) {
+      before.discountType = current.discountType;
+      before.discountValue = String(current.discountValue);
+      before.discountReason = current.discountReason;
+      data.discountType = next.type;
+      data.discountValue = next.value.toFixed(4);
+      data.discountReason = next.reason;
+    }
+  }
+
   if (!Object.keys(data).length) return serializeTenantRow(existing);
 
   const row = await prisma.tenant.update({ where: { id }, data, include: { plan: true } });
@@ -361,9 +433,22 @@ export async function createInvoice(ctx: RequestContext, body: Record<string, un
   const periodStart = asDate(body.periodStart, defaults.periodStart)!;
   const periodEnd = asDate(body.periodEnd, defaults.periodEnd)!;
   const dueDate = asDate(body.dueDate, defaults.dueDate)!;
-  const amountRaw = body.amount ?? tenant.plan?.price ?? 0;
-  const amount = Number(amountRaw);
-  if (!Number.isFinite(amount) || amount < 0) throw Object.assign(new Error("amount invalid"), { code: "VALIDATION" });
+  const planPrice = Number((tenant.plan as { price?: unknown } | null)?.price ?? 0);
+  const hasExplicitAmount = body.amount !== undefined && body.amount !== null && String(body.amount).trim() !== "";
+  const subtotalRaw = hasExplicitAmount ? Number(body.amount) : Number.isFinite(planPrice) ? planPrice : 0;
+  if (!Number.isFinite(subtotalRaw) || subtotalRaw < 0) throw Object.assign(new Error("amount invalid"), { code: "VALIDATION" });
+  const subtotal = Math.round(subtotalRaw * 100) / 100;
+  const tenantDiscountType = parseDiscountType((tenant as { discountType?: unknown }).discountType);
+  const tenantDiscountValue = parseDiscountValue((tenant as { discountValue?: unknown }).discountValue);
+  const discountType =
+    body.discountType !== undefined ? parseDiscountType(body.discountType) : tenantDiscountType;
+  const discountValueRaw =
+    body.discountValue ?? body.discountPercent ?? body.discountAmount ?? tenantDiscountValue;
+  let discountValue = parseDiscountValue(discountValueRaw);
+  if (discountType === "PERCENT") discountValue = Math.min(100, discountValue);
+  if (discountType === "NONE") discountValue = 0;
+  const discountAmount = Math.round(calcDiscountAmount(subtotal, discountType, discountValue) * 100) / 100;
+  const amount = Math.max(0, Math.round((subtotal - discountAmount) * 100) / 100);
   const number = await nextPlatformInvoiceNumber();
   const row = await prisma.platformInvoice.create({
     data: {
@@ -372,6 +457,10 @@ export async function createInvoice(ctx: RequestContext, body: Record<string, un
       periodStart,
       periodEnd,
       dueDate,
+      subtotal: subtotal.toFixed(4),
+      discountType,
+      discountValue: discountValue.toFixed(4),
+      discountAmount: discountAmount.toFixed(4),
       amount: amount.toFixed(4),
       currency: String(body.currency ?? tenant.plan?.currency ?? "BDT"),
       notes: body.notes != null ? String(body.notes) : null,
@@ -388,7 +477,7 @@ export async function createInvoice(ctx: RequestContext, body: Record<string, un
     action: "platform.invoice.create",
     entityType: "PlatformInvoice",
     entityId: row.id,
-    after: { number, amount, tenantId },
+    after: { number, subtotal, discountType, discountValue, discountAmount, amount, tenantId },
   });
   return serializeInvoice(row);
 }
@@ -474,6 +563,113 @@ export async function sendInvoice(ctx: RequestContext, id: string) {
     after: { number: row.number, sentAt: row.sentAt },
   });
   await processOutboxBatch(20);
+  return serializeInvoice(row);
+}
+
+export async function updateInvoice(ctx: RequestContext, id: string, body: Record<string, unknown>) {
+  const existing = await prisma.platformInvoice.findUnique({
+    where: { id },
+    include: { tenant: { include: { plan: true } } },
+  });
+  if (!existing) throw Object.assign(new Error("Invoice not found"), { code: "NOT_FOUND" });
+  if (existing.status === "PAID") throw Object.assign(new Error("Paid invoices can't be edited"), { code: "VALIDATION" });
+  if (existing.status === "VOID") throw Object.assign(new Error("Void invoices can't be edited"), { code: "VALIDATION" });
+
+  const data: Prisma.PlatformInvoiceUpdateInput = {};
+  const before: Record<string, unknown> = {};
+
+  const touchesMoney =
+    body.amount !== undefined || body.discountType !== undefined || body.discountValue !== undefined;
+  if (touchesMoney) {
+    const currentSubtotal = Number(existing.subtotal ?? existing.amount) || 0;
+    const subtotalRaw =
+      body.amount !== undefined && body.amount !== null && String(body.amount).trim() !== ""
+        ? Number(body.amount)
+        : currentSubtotal;
+    if (!Number.isFinite(subtotalRaw) || subtotalRaw < 0) {
+      throw Object.assign(new Error("amount invalid"), { code: "VALIDATION" });
+    }
+    const subtotal = Math.round(subtotalRaw * 100) / 100;
+    const currentType = parseDiscountType((existing as { discountType?: unknown }).discountType);
+    const currentValue = parseDiscountValue((existing as { discountValue?: unknown }).discountValue);
+    const discountType = body.discountType !== undefined ? parseDiscountType(body.discountType) : currentType;
+    let discountValue =
+      body.discountValue !== undefined ? parseDiscountValue(body.discountValue) : currentValue;
+    if (discountType === "PERCENT") discountValue = Math.min(100, discountValue);
+    if (discountType === "NONE") discountValue = 0;
+    const discountAmount = Math.round(calcDiscountAmount(subtotal, discountType, discountValue) * 100) / 100;
+    const amount = Math.max(0, Math.round((subtotal - discountAmount) * 100) / 100);
+    before.subtotal = String(existing.subtotal ?? existing.amount);
+    before.discountType = (existing as { discountType?: unknown }).discountType ?? "NONE";
+    before.discountValue = String((existing as { discountValue?: unknown }).discountValue ?? 0);
+    before.amount = String(existing.amount);
+    data.subtotal = subtotal.toFixed(4);
+    data.discountType = discountType;
+    data.discountValue = discountValue.toFixed(4);
+    data.discountAmount = discountAmount.toFixed(4);
+    data.amount = amount.toFixed(4);
+  }
+
+  if (body.currency !== undefined) {
+    const currency = String(body.currency ?? "").trim().toUpperCase().slice(0, 8) || existing.currency;
+    if (currency !== existing.currency) {
+      before.currency = existing.currency;
+      data.currency = currency;
+    }
+  }
+
+  let dueDateChanged = false;
+  if (body.periodStart !== undefined) {
+    const next = asDate(body.periodStart);
+    if (next && next.getTime() !== existing.periodStart.getTime()) {
+      before.periodStart = existing.periodStart;
+      data.periodStart = next;
+    }
+  }
+  if (body.periodEnd !== undefined) {
+    const next = asDate(body.periodEnd);
+    if (next && next.getTime() !== existing.periodEnd.getTime()) {
+      before.periodEnd = existing.periodEnd;
+      data.periodEnd = next;
+    }
+  }
+  if (body.dueDate !== undefined) {
+    const next = asDate(body.dueDate);
+    if (next && next.getTime() !== existing.dueDate.getTime()) {
+      before.dueDate = existing.dueDate;
+      data.dueDate = next;
+      dueDateChanged = true;
+    }
+  }
+  if (body.notes !== undefined) {
+    const notes = body.notes != null && String(body.notes).trim() ? String(body.notes) : null;
+    if (notes !== existing.notes) {
+      before.notes = existing.notes;
+      data.notes = notes;
+    }
+  }
+
+  // Keep PENDING/OVERDUE in sync when the due date moves.
+  if (dueDateChanged && data.dueDate instanceof Date) {
+    const nextStatus = data.dueDate.getTime() < Date.now() ? "OVERDUE" : "PENDING";
+    if (nextStatus !== existing.status) {
+      before.status = existing.status;
+      data.status = nextStatus;
+    }
+  }
+
+  if (!Object.keys(data).length) return serializeInvoice(existing);
+  const row = await prisma.platformInvoice.update({ where: { id }, data, include: invoiceInclude });
+  await recordEvent({ invoiceId: id, tenantId: row.tenantId, type: "UPDATED", actorId: ctx.userId });
+  await writeAudit({
+    ctx,
+    tenantId: row.tenantId,
+    action: "platform.invoice.update",
+    entityType: "PlatformInvoice",
+    entityId: id,
+    before,
+    after: Object.fromEntries(Object.keys(before).map((k) => [k, (row as Record<string, unknown>)[k]])),
+  });
   return serializeInvoice(row);
 }
 

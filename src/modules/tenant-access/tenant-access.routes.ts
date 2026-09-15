@@ -58,6 +58,9 @@ tenantAccessRouter.get("/plan", requirePermission("plan.manage"), async (req, re
       id: tenant?.id,
       name: tenant?.name,
       subscriptionStatus: tenant?.subscriptionStatus,
+      discountType: tenant?.discountType ?? "NONE",
+      discountValue: tenant?.discountValue?.toNumber() ?? 0,
+      discountReason: tenant?.discountReason ?? null,
     },
     plan: tenant?.plan
       ? {

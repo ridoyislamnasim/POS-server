@@ -20,6 +20,9 @@ model Tenant {
   smsAccessEnabled         Boolean   @default(true)
   smsAccessDisabledAt      DateTime?
   smsAccessDisabledReason  String?
+  discountType           String             @default("NONE")
+  discountValue          Decimal            @default(0) @db.Decimal(19, 4)
+  discountReason         String?
   createdAt           DateTime           @default(now())
   updatedAt           DateTime           @default(now()) @updatedAt
 
@@ -61,9 +64,10 @@ model Plan {
   currency     String       @default("BDT")
   active       Boolean      @default(true)
   displayOrder Int          @default(0)
-  tenants      Tenant[]
-  planLimits   PlanLimit[]
-  planFeatures PlanFeature[]
+  tenants              Tenant[]
+  planLimits           PlanLimit[]
+  planFeatures         PlanFeature[]
+  requestedByTenants   TenantAccessRequest[]
   createdAt    DateTime     @default(now())
 }
 
@@ -149,6 +153,7 @@ model TenantAccessRequest {
   resource        ResourceKey?
   feature         FeatureKey?
   requestedPlanId String?       // For PLAN_CHANGE: target plan ID
+  requestedPlan   Plan?         @relation(fields: [requestedPlanId], references: [id], onDelete: SetNull)
   currentValue    Int?
   requestedValue  Int?
   reason          String
