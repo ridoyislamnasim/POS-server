@@ -9,6 +9,11 @@ export function okList<T>(res: Response, data: T[], pagination: Pagination, stat
   return res.status(status).json({ success: true, data, pagination, meta: pagination });
 }
 
-export function fail(res: Response, code: string, message: string, status = 400) {
-  return res.status(status).json({ success: false, error: { code, message } });
+export function fail(res: Response, code: string, message: string, status = 400, details?: Record<string, unknown>) {
+  const body: { success: false; error: { code: string; message: string; details?: Record<string, unknown> } } = {
+    success: false,
+    error: { code, message },
+  };
+  if (details) body.error.details = details;
+  return res.status(status).json(body);
 }

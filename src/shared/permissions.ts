@@ -50,6 +50,10 @@ export const Permissions = [
   "branch.manage",
   "warehouse.manage",
   "plan.manage",
+  "plan.limit.manage",
+  "plan.feature.manage",
+  "tenant.access_request.create",
+  "tenant.access_request.cancel",
   "backup.manage",
   "integration.manage",
   "notification.view",
@@ -125,6 +129,8 @@ export const MANAGER_KEYS: PermissionKey[] = [
   "sms.settings",
   "user.create",
   "user.manage",
+  "tenant.access_request.create",
+  "tenant.access_request.cancel",
 ];
 
 export const CASHIER_KEYS: PermissionKey[] = [

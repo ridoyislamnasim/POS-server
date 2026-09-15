@@ -34,7 +34,7 @@ saasRouter.get("/subscription", requirePermission("plan.manage"), async (req, re
     products: await prisma.product.count({ where: { tenantId: tenantId(ctx) } }),
     warehouses: await prisma.location.count({ where: { tenantId: tenantId(ctx), type: "WAREHOUSE" } }),
   };
-  return ok(res, { tenant, usage, limits: tenant?.plan?.limits ?? {} });
+  return ok(res, { tenant, usage, limits: {} });
 });
 
 saasRouter.post("/subscription", requirePermission("plan.manage"), async (req, res) => {

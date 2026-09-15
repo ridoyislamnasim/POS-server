@@ -149,11 +149,25 @@ export async function planLimits(ctx: RequestContext) {
     where: { id: tenantId(ctx) },
     include: { plan: true },
   });
-  const limits = (t?.plan?.limits ?? {}) as {
+
+  const limits: {
     maxBranches?: number;
     maxUsers?: number;
     maxProducts?: number;
     maxWarehouses?: number;
-  };
+  } = {};
+
+  // Read from PlanLimit table (single source of truth)
+  if (t?.planId) {
+    const planLimits = await prisma.planLimit.findMany({ where: { planId: t.planId } });
+    for (const pl of planLimits) {
+      if (pl.unlimited || pl.disabled) continue;
+      if (pl.limitValue !== null) {
+        const key = `max${pl.resource.charAt(0) + pl.resource.slice(1).toLowerCase()}` as keyof typeof limits;
+        (limits as any)[key] = pl.limitValue;
+      }
+    }
+  }
+
   return { tenant: t, limits };
 }

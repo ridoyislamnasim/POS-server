@@ -30,6 +30,9 @@ import { reportsRouter } from "./modules/reports/reports.routes.js";
 import { extrasRouter } from "./modules/extras/extras.routes.js";
 import { smsRouter } from "./modules/sms/sms.routes.js";
 import { platformBillingRouter } from "./modules/platform-billing/billing.routes.js";
+import { planRouter } from "./modules/plans/plan.routes.js";
+import { tenantAccessRouter } from "./modules/tenant-access/tenant-access.routes.js";
+import { tenantRequestRouter, platformRequestRouter, platformOverrideRouter } from "./modules/access-requests/access-request.routes.js";
 
 const originAllowlist = (process.env.WEB_ORIGIN ?? "http://localhost:3000")
   .split(",")
@@ -82,7 +85,12 @@ export function createApp() {
   app.use("/api/v1/staff", staffRouter);
   app.use("/api/v1/settings", settingsRouter);
   app.use("/api/v1/saas", saasRouter);
+  app.use("/api/v1/saas/access-requests", tenantRequestRouter);
+  app.use("/api/v1/saas", tenantAccessRouter);
   app.use("/api/v1/platform-billing", platformBillingRouter);
+  app.use("/api/v1/platform/plans", planRouter);
+  app.use("/api/v1/platform/access-requests", platformRequestRouter);
+  app.use("/api/v1/platform/tenant-overrides", platformOverrideRouter);
   app.use("/api/v1/commerce", commerceRouter);
   app.use("/api/v1/reports", reportsRouter);
   app.use("/api/v1/extras", extrasRouter);

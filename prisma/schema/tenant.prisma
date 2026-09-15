@@ -38,6 +38,9 @@ model Tenant {
   settings      TenantSettings?
   platformInvoices PlatformInvoice[]
   smsSettings   SmsSettings?
+  limitOverrides    TenantLimitOverride[]
+  featureOverrides  TenantFeatureOverride[]
+  accessRequests    TenantAccessRequest[]
 }
 
 model Currency {
@@ -48,17 +51,117 @@ model Currency {
 }
 
 model Plan {
-  id        String       @id @default(cuid())
-  code      String       @unique
-  name      String
-  interval  PlanInterval @default(MONTHLY)
-  price     Decimal      @default(0) @db.Decimal(19, 4)
-  currency  String       @default("BDT")
-  features  Json
-  limits    Json
-  active    Boolean      @default(true)
-  tenants   Tenant[]
-  createdAt DateTime     @default(now())
+  id           String       @id @default(cuid())
+  code         String       @unique
+  name         String
+  description  String?
+  interval     PlanInterval @default(MONTHLY)
+  price        Decimal      @default(0) @db.Decimal(19, 4)
+  yearlyPrice  Decimal?     @db.Decimal(19, 4)
+  currency     String       @default("BDT")
+  active       Boolean      @default(true)
+  displayOrder Int          @default(0)
+  tenants      Tenant[]
+  planLimits   PlanLimit[]
+  planFeatures PlanFeature[]
+  createdAt    DateTime     @default(now())
+}
+
+model PlanLimit {
+  id         String      @id @default(cuid())
+  planId     String
+  plan       Plan        @relation(fields: [planId], references: [id], onDelete: Cascade)
+  resource   ResourceKey
+  limitValue Int?
+  unlimited  Boolean     @default(false)
+  disabled   Boolean     @default(false)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  @@unique([planId, resource])
+  @@index([planId])
+}
+
+model PlanFeature {
+  id        String    @id @default(cuid())
+  planId    String
+  plan      Plan      @relation(fields: [planId], references: [id], onDelete: Cascade)
+  feature   FeatureKey
+  enabled   Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@unique([planId, feature])
+  @@index([planId])
+}
+
+// Immutable override grants — each approval creates a new row.
+// "current" flag points to the active override for quick lookup.
+// Historical rows are kept for audit trail.
+model TenantLimitOverride {
+  id          String         @id @default(cuid())
+  tenantId    String
+  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  resource    ResourceKey
+  limitValue  Int
+  approvedBy  String
+  approvedAt  DateTime       @default(now())
+  expiresAt   DateTime?
+  status      OverrideStatus @default(ACTIVE)
+  current     Boolean        @default(true)
+  reason      String?
+  requestId   String?        // Link back to TenantAccessRequest
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([tenantId, resource, current])
+  @@index([tenantId, status])
+  @@index([status])
+}
+
+model TenantFeatureOverride {
+  id          String         @id @default(cuid())
+  tenantId    String
+  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  feature     FeatureKey
+  enabled     Boolean        @default(true)
+  approvedBy  String
+  approvedAt  DateTime       @default(now())
+  expiresAt   DateTime?
+  status      OverrideStatus @default(ACTIVE)
+  current     Boolean        @default(true)
+  reason      String?
+  requestId   String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([tenantId, feature, current])
+  @@index([tenantId, status])
+  @@index([status])
+}
+
+model TenantAccessRequest {
+  id              String        @id @default(cuid())
+  tenantId        String
+  tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  requestedBy     String
+  type            RequestType
+  resource        ResourceKey?
+  feature         FeatureKey?
+  requestedPlanId String?       // For PLAN_CHANGE: target plan ID
+  currentValue    Int?
+  requestedValue  Int?
+  reason          String
+  status          RequestStatus @default(PENDING)
+  reviewedBy      String?
+  reviewedAt      DateTime?
+  rejectionReason String?
+  expiresAt       DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([tenantId, status])
+  @@index([status, createdAt])
 }
 
 model Business {

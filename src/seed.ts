@@ -47,6 +47,11 @@ async function wipe() {
   await prisma.marketingLead.deleteMany();
   await prisma.marketingFeature.deleteMany();
   await prisma.marketingSite.deleteMany();
+  await prisma.tenantAccessRequest.deleteMany();
+  await prisma.tenantFeatureOverride.deleteMany();
+  await prisma.tenantLimitOverride.deleteMany();
+  await prisma.planFeature.deleteMany();
+  await prisma.planLimit.deleteMany();
   await prisma.saleReturnExchange.deleteMany();
   await prisma.saleReturnItem.deleteMany();
   await prisma.loginAttempt.deleteMany();
@@ -146,8 +151,9 @@ async function main() {
       name: "Growth",
       interval: "MONTHLY",
       price: "4999",
-      features: ["MULTI_BRANCH", "LOYALTY", "ECOMMERCE", "REPORTS", "WHATSAPP"],
-      limits: { maxBranches: 5, maxUsers: 20, maxProducts: 5000, maxWarehouses: 5 },
+      yearlyPrice: "49990",
+      displayOrder: 2,
+      description: "For growing businesses needing more power",
     },
   });
   await prisma.plan.createMany({
@@ -157,27 +163,118 @@ async function main() {
         name: "Starter",
         interval: "MONTHLY",
         price: "1499",
-        features: ["POS", "INVENTORY"],
-        limits: { maxBranches: 1, maxUsers: 3, maxProducts: 500, maxWarehouses: 1 },
-      },
-      {
-        code: "GROWTH_YEARLY",
-        name: "Growth (Yearly)",
-        interval: "YEARLY",
-        price: "49990",
-        features: ["MULTI_BRANCH", "LOYALTY", "ECOMMERCE", "REPORTS", "WHATSAPP"],
-        limits: { maxBranches: 5, maxUsers: 20, maxProducts: 5000, maxWarehouses: 5 },
+        yearlyPrice: "14990",
+        displayOrder: 1,
+        description: "For small businesses getting started",
       },
       {
         code: "UNIVERSAL",
         name: "Universal",
         interval: "MONTHLY",
         price: "12999",
-        features: ["ALL"],
-        limits: { maxBranches: 99, maxUsers: 500, maxProducts: 100000, maxWarehouses: 50 },
+        yearlyPrice: "129990",
+        displayOrder: 3,
+        description: "For large enterprises with unlimited needs",
       },
     ],
   });
+
+  // Seed PlanLimit and PlanFeature tables
+  const starterPlan = await prisma.plan.findUnique({ where: { code: "STARTER" } });
+  const universalPlan = await prisma.plan.findUnique({ where: { code: "UNIVERSAL" } });
+
+  if (starterPlan) {
+    await prisma.planLimit.createMany({
+      data: [
+        { planId: starterPlan.id, resource: "BRANCH", limitValue: 1 },
+        { planId: starterPlan.id, resource: "WAREHOUSE", limitValue: 1 },
+        { planId: starterPlan.id, resource: "USER", limitValue: 3 },
+        { planId: starterPlan.id, resource: "PRODUCT", limitValue: 500 },
+        { planId: starterPlan.id, resource: "CUSTOMER", limitValue: 500 },
+        { planId: starterPlan.id, resource: "SUPPLIER", limitValue: 100 },
+        { planId: starterPlan.id, resource: "MONTHLY_SALE", limitValue: 1000 },
+        { planId: starterPlan.id, resource: "MONTHLY_PURCHASE_ORDER", limitValue: 100 },
+      ],
+    });
+    await prisma.planFeature.createMany({
+      data: [
+        { planId: starterPlan.id, feature: "POS", enabled: true },
+        { planId: starterPlan.id, feature: "INVENTORY", enabled: true },
+        { planId: starterPlan.id, feature: "CUSTOMERS", enabled: true },
+        { planId: starterPlan.id, feature: "SUPPLIERS", enabled: true },
+        { planId: starterPlan.id, feature: "PURCHASES", enabled: true },
+        { planId: starterPlan.id, feature: "SALES", enabled: true },
+        { planId: starterPlan.id, feature: "RETURNS", enabled: true },
+        { planId: starterPlan.id, feature: "BASIC_REPORTS", enabled: true },
+        { planId: starterPlan.id, feature: "STOCK_TRANSFER", enabled: false },
+        { planId: starterPlan.id, feature: "MULTI_BRANCH", enabled: false },
+        { planId: starterPlan.id, feature: "MULTI_WAREHOUSE", enabled: false },
+        { planId: starterPlan.id, feature: "LOYALTY", enabled: false },
+        { planId: starterPlan.id, feature: "ECOMMERCE", enabled: false },
+        { planId: starterPlan.id, feature: "ADVANCED_REPORTS", enabled: false },
+        { planId: starterPlan.id, feature: "ANALYTICS", enabled: false },
+        { planId: starterPlan.id, feature: "WHATSAPP", enabled: false },
+        { planId: starterPlan.id, feature: "API", enabled: false },
+        { planId: starterPlan.id, feature: "INTEGRATIONS", enabled: false },
+        { planId: starterPlan.id, feature: "ADVANCED_ROLES", enabled: false },
+        { planId: starterPlan.id, feature: "AUDIT_LOGS", enabled: false },
+        { planId: starterPlan.id, feature: "PRIORITY_SUPPORT", enabled: false },
+        { planId: starterPlan.id, feature: "DEDICATED_SUPPORT", enabled: false },
+      ],
+    });
+  }
+
+  // Growth plan limits and features
+  await prisma.planLimit.createMany({
+    data: [
+      { planId: growth.id, resource: "BRANCH", limitValue: 3 },
+      { planId: growth.id, resource: "WAREHOUSE", limitValue: 5 },
+      { planId: growth.id, resource: "USER", limitValue: 10 },
+      { planId: growth.id, resource: "PRODUCT", limitValue: 5000 },
+      { planId: growth.id, resource: "CUSTOMER", limitValue: 5000 },
+      { planId: growth.id, resource: "SUPPLIER", limitValue: 1000 },
+      { planId: growth.id, resource: "MONTHLY_SALE", limitValue: 10000 },
+      { planId: growth.id, resource: "MONTHLY_PURCHASE_ORDER", limitValue: 1000 },
+    ],
+  });
+  await prisma.planFeature.createMany({
+    data: [
+      { planId: growth.id, feature: "POS", enabled: true },
+      { planId: growth.id, feature: "INVENTORY", enabled: true },
+      { planId: growth.id, feature: "CUSTOMERS", enabled: true },
+      { planId: growth.id, feature: "SUPPLIERS", enabled: true },
+      { planId: growth.id, feature: "PURCHASES", enabled: true },
+      { planId: growth.id, feature: "SALES", enabled: true },
+      { planId: growth.id, feature: "RETURNS", enabled: true },
+      { planId: growth.id, feature: "BASIC_REPORTS", enabled: true },
+      { planId: growth.id, feature: "STOCK_TRANSFER", enabled: true },
+      { planId: growth.id, feature: "MULTI_BRANCH", enabled: true },
+      { planId: growth.id, feature: "MULTI_WAREHOUSE", enabled: true },
+      { planId: growth.id, feature: "LOYALTY", enabled: true },
+      { planId: growth.id, feature: "ECOMMERCE", enabled: true },
+      { planId: growth.id, feature: "ADVANCED_REPORTS", enabled: true },
+      { planId: growth.id, feature: "ANALYTICS", enabled: true },
+      { planId: growth.id, feature: "WHATSAPP", enabled: true },
+      { planId: growth.id, feature: "ADVANCED_ROLES", enabled: true },
+      { planId: growth.id, feature: "API", enabled: false },
+      { planId: growth.id, feature: "INTEGRATIONS", enabled: false },
+      { planId: growth.id, feature: "AUDIT_LOGS", enabled: false },
+      { planId: growth.id, feature: "PRIORITY_SUPPORT", enabled: true },
+      { planId: growth.id, feature: "DEDICATED_SUPPORT", enabled: false },
+    ],
+  });
+
+  // Universal plan — unlimited everything
+  if (universalPlan) {
+    const allResources = ["BRANCH", "WAREHOUSE", "USER", "PRODUCT", "CUSTOMER", "SUPPLIER", "MONTHLY_SALE", "MONTHLY_PURCHASE_ORDER"] as const;
+    await prisma.planLimit.createMany({
+      data: allResources.map((resource) => ({ planId: universalPlan.id, resource, unlimited: true })),
+    });
+    const allFeatures = ["POS", "INVENTORY", "CUSTOMERS", "SUPPLIERS", "PURCHASES", "SALES", "RETURNS", "BASIC_REPORTS", "STOCK_TRANSFER", "MULTI_BRANCH", "MULTI_WAREHOUSE", "LOYALTY", "ECOMMERCE", "ADVANCED_REPORTS", "ANALYTICS", "WHATSAPP", "API", "INTEGRATIONS", "ADVANCED_ROLES", "AUDIT_LOGS", "PRIORITY_SUPPORT", "DEDICATED_SUPPORT"] as const;
+    await prisma.planFeature.createMany({
+      data: allFeatures.map((feature) => ({ planId: universalPlan.id, feature, enabled: true })),
+    });
+  }
 
   const tenant = await prisma.tenant.create({
     data: {
