@@ -3,7 +3,7 @@ import { fail } from "../lib/envelope.js";
 import { CSRF_COOKIE } from "../lib/cookies.js";
 
 const SAFE = new Set(["GET", "HEAD", "OPTIONS"]);
-const SKIP = new Set(["/api/v1/auth/login"]);
+const SKIP = new Set(["/api/v1/auth/login", "/api/v1/platform/bootstrap"]);
 
 export function csrfProtect(req: Request, res: Response, next: NextFunction) {
   if (SAFE.has(req.method)) return next();

@@ -23,6 +23,7 @@ import { smsRouter } from "../modules/sms/sms.routes.js";
 import { platformBillingRouter } from "../modules/platform-billing/billing.routes.js";
 import { planRouter } from "../modules/plans/plan.routes.js";
 import { tenantAccessRouter } from "../modules/tenant-access/tenant-access.routes.js";
+import { platformBootstrapRouter } from "../modules/platform-bootstrap/platform-bootstrap.routes.js";
 import {
   tenantRequestRouter,
   platformRequestRouter,
@@ -35,6 +36,7 @@ import {
  */
 export function registerRoutes(app: Express) {
   app.use("/api/v1/auth", authRouter);
+  app.use("/api/v1/platform", platformBootstrapRouter);
   app.use("/api/v1/catalog", catalogRouter);
   app.use("/api/v1/sales", salesRouter);
   app.use("/api/v1/shifts", shiftsRouter);
