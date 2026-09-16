@@ -90,4 +90,32 @@ export const saleRepository = {
       count: () => prisma.sale.count({ where }),
     });
   },
+
+  async listOpenHolds(ctx: RequestContext) {
+    requireTenantId(ctx);
+    return prisma.heldSale.findMany({
+      where: {
+        tenantId: ctx.tenantId!,
+        cashierId: ctx.userId,
+        ...(ctx.allBranches || ctx.isPlatform ? {} : { branchId: { in: ctx.branchIds } }),
+      },
+      orderBy: { createdAt: "desc" },
+    });
+  },
+
+  async createHold(ctx: RequestContext, branchId: string, payload: unknown) {
+    requireTenantId(ctx);
+    return prisma.heldSale.create({
+      data: { tenantId: ctx.tenantId!, branchId, cashierId: ctx.userId, payload: payload as never },
+    });
+  },
+
+  async findHold(ctx: RequestContext, id: string) {
+    requireTenantId(ctx);
+    return prisma.heldSale.findFirst({ where: { id, tenantId: ctx.tenantId!, cashierId: ctx.userId } });
+  },
+
+  async deleteHold(id: string) {
+    return prisma.heldSale.delete({ where: { id } });
+  },
 };

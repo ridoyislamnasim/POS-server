@@ -1,4 +1,5 @@
 import { prisma } from "../../lib/prisma.js";
+import type { LoyaltyType } from "@prisma/client";
 import { ForbiddenError, assertTenant, requireTenantId } from "../../lib/scope.js";
 import { normalizeBdPhone } from "../../shared/phone.js";
 import type { RequestContext } from "../../types.js";
@@ -120,5 +121,63 @@ export const customerRepository = {
       create: { tenantId, name, phone: displayPhone, phoneCanonical },
       update: { ...(input.name?.trim() ? { name: input.name.trim() } : {}), phone: displayPhone },
     });
+  },
+
+  async adjustLoyalty(tenantId: string, customerId: string, type: LoyaltyType, delta: number, notes?: string) {
+    const [txn] = await prisma.$transaction([
+      prisma.loyaltyTransaction.create({
+        data: { tenantId, customerId, type, points: delta, notes },
+      }),
+      prisma.customer.update({
+        where: { id: customerId },
+        data: { loyaltyPoints: { increment: delta } },
+      }),
+    ]);
+    return txn;
+  },
+
+  listSales(tenantId: string, customerId: string) {
+    return prisma.sale.findMany({
+      where: { tenantId, customerId },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+      include: { payments: true, branch: { select: { name: true } } },
+    });
+  },
+
+  listLoyalty(tenantId: string, customerId: string) {
+    return prisma.loyaltyTransaction.findMany({
+      where: { tenantId, customerId },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+  },
+
+  listPayments(tenantId: string, customerId: string) {
+    return prisma.ledgerPayment.findMany({
+      where: { tenantId, partyType: "CUSTOMER", partyId: customerId },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+  },
+
+  countSales(customerId: string) {
+    return prisma.sale.count({ where: { customerId } });
+  },
+
+  countOrders(customerId: string) {
+    return prisma.salesOrder.count({ where: { customerId } });
+  },
+
+  deleteLoyalty(customerId: string) {
+    return prisma.loyaltyTransaction.deleteMany({ where: { customerId } });
+  },
+
+  removeCustomer(id: string) {
+    return prisma.customer.delete({ where: { id } });
+  },
+
+  updateCustomer(id: string, data: Record<string, unknown>) {
+    return prisma.customer.update({ where: { id }, data: data as never });
   },
 };

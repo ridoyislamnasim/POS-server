@@ -1,157 +1,17 @@
-import { Router, type Request } from "express";
-import { createHash, randomBytes } from "node:crypto";
-import { prisma } from "../../lib/prisma.js";
-import { fail, ok, okList } from "../../lib/envelope.js";
+import { Router } from "express";
 import { requireAuth, requirePermission, requireTenant } from "../../middleware/auth.js";
-import { tenantId } from "../../lib/erp.js";
-import { writeAudit } from "../../lib/audit.js";
-import type { AuthedRequest } from "../../types.js";
-import { parseListQuery, withPagination } from "../../lib/list-query.js";
-import { enqueueOutbox } from "../outbox/enqueue.js";
-import { assertTenantApiKeysAllowed } from "../platform-billing/billing.service.js";
-import { PAYMENT_REQUIRED_MESSAGE } from "../../middleware/auth.js";
+import { validateBody } from "../../middleware/validate.js";
+import { saasController } from "./saas.controller.js";
+import { changePlanSchema, createApiKeySchema, createBackupSchema } from "./saas.validation.js";
 
 export const saasRouter = Router();
 saasRouter.use(requireAuth, requireTenant);
 
-function ctxOf(req: Request) {
-  return (req as AuthedRequest).ctx;
-}
-
-saasRouter.get("/subscription", requirePermission("plan.manage"), async (req, res) => {
-  const ctx = ctxOf(req);
-  const tenant = await prisma.tenant.findUnique({
-    where: { id: tenantId(ctx) },
-    include: { plan: true },
-  });
-  const usage = {
-    branches: await prisma.branch.count({ where: { tenantId: tenantId(ctx) } }),
-    users: await prisma.userTenant.count({ where: { tenantId: tenantId(ctx), isPlatform: false } }),
-    products: await prisma.product.count({ where: { tenantId: tenantId(ctx) } }),
-    warehouses: await prisma.location.count({ where: { tenantId: tenantId(ctx), type: "WAREHOUSE" } }),
-  };
-  return ok(res, { tenant, usage, limits: {} });
-});
-
-saasRouter.post("/subscription", requirePermission("plan.manage"), async (req, res) => {
-  const ctx = ctxOf(req);
-  const plan = await prisma.plan.findFirst({ where: { id: String(req.body?.planId ?? ""), active: true } });
-  if (!plan) return fail(res, "NOT_FOUND", "Plan not found", 404);
-  const tenant = await prisma.tenant.update({
-    where: { id: tenantId(ctx) },
-    data: { planId: plan.id, subscriptionStatus: "ACTIVE" },
-    include: { plan: true },
-  });
-  return ok(res, tenant);
-});
-
-saasRouter.get("/api-keys", requirePermission("integration.manage"), async (req, res) => {
-  const ctx = ctxOf(req);
-  const rows = await prisma.apiKey.findMany({
-    where: { tenantId: tenantId(ctx) },
-    orderBy: { createdAt: "desc" },
-  });
-  return ok(res, rows.map(({ keyHash: _, ...r }) => r));
-});
-
-saasRouter.post("/api-keys", requirePermission("integration.manage"), async (req, res) => {
-  const ctx = ctxOf(req);
-  try {
-    await assertTenantApiKeysAllowed(tenantId(ctx));
-  } catch (e) {
-    const err = e as { code?: string; message?: string };
-    if (err.code === "PAYMENT_REQUIRED") return fail(res, "PAYMENT_REQUIRED", PAYMENT_REQUIRED_MESSAGE, 402);
-    throw e;
-  }
-  const name = String(req.body?.name ?? "").trim();
-  if (!name) return fail(res, "VALIDATION", "name required");
-  const raw = `pos_${randomBytes(24).toString("hex")}`;
-  const keyHash = createHash("sha256").update(raw).digest("hex");
-  const row = await prisma.apiKey.create({
-    data: {
-      tenantId: tenantId(ctx),
-      name,
-      keyPrefix: raw.slice(0, 12),
-      keyHash,
-    },
-  });
-  const { keyHash: _, ...safe } = row;
-  return ok(res, { ...safe, secret: raw }, undefined, 201);
-});
-
-saasRouter.post("/api-keys/:id/revoke", requirePermission("integration.manage"), async (req, res) => {
-  const ctx = ctxOf(req);
-  const existing = await prisma.apiKey.findFirst({
-    where: { id: String(req.params.id), tenantId: tenantId(ctx) },
-  });
-  if (!existing) return fail(res, "NOT_FOUND", "Key not found", 404);
-  const row = await prisma.apiKey.update({ where: { id: existing.id }, data: { revokedAt: new Date() } });
-  const { keyHash: _, ...safe } = row;
-  return ok(res, safe);
-});
-
-saasRouter.post("/backup", requirePermission("backup.manage"), async (req, res) => {
-  const ctx = ctxOf(req);
-  const tid = tenantId(ctx);
-  const payload = {
-    tenant: await prisma.tenant.findUnique({ where: { id: tid }, include: { businesses: true, settings: true, plan: true } }),
-    branches: await prisma.branch.findMany({ where: { tenantId: tid } }),
-    customers: await prisma.customer.findMany({ where: { tenantId: tid } }),
-    suppliers: await prisma.supplier.findMany({ where: { tenantId: tid } }),
-    products: await prisma.product.findMany({ where: { tenantId: tid }, include: { variants: true } }),
-    exportedAt: new Date().toISOString(),
-  };
-  const json = JSON.stringify(payload);
-  const rec = await prisma.backupRecord.create({
-    data: {
-      tenantId: tid,
-      status: "COMPLETE",
-      note: req.body?.note ?? "manual",
-      payloadSize: json.length,
-      createdById: ctx.userId,
-    },
-  });
-  await writeAudit({ ctx, action: "backup.create", entityType: "BackupRecord", entityId: rec.id });
-  await enqueueOutbox(prisma, {
-    tenantId: tid,
-    type: "BACKUP_RESULT",
-    aggregateId: rec.id,
-    payload: { ok: true, message: "Manual backup finished.", entityType: "BackupRecord", entityId: rec.id },
-  });
-  return ok(res, { record: rec, payload });
-});
-
-saasRouter.get("/backups", requirePermission("backup.manage"), async (req, res) => {
-  const ctx = ctxOf(req);
-  const list = parseListQuery(req.query, { sortable: ["createdAt"], defaultSort: "createdAt", defaultOrder: "desc" });
-  const where = { tenantId: tenantId(ctx) };
-  const { rows, pagination } = await withPagination(list, {
-    find: (skip, take) =>
-      prisma.backupRecord.findMany({
-        where,
-        orderBy: { createdAt: "desc" },
-        skip,
-        take,
-        select: { id: true, status: true, note: true, payloadSize: true, createdAt: true, createdById: true },
-      }),
-    count: () => prisma.backupRecord.count({ where }),
-  });
-  return okList(res, rows, pagination);
-});
-
-saasRouter.get("/backups/:id/download", requirePermission("backup.manage"), async (req, res) => {
-  const ctx = ctxOf(req);
-  const tid = tenantId(ctx);
-  const rec = await prisma.backupRecord.findFirst({ where: { id: String(req.params.id), tenantId: tid } });
-  if (!rec) return fail(res, "NOT_FOUND", "Backup not found", 404);
-
-  const payload = {
-    tenant: await prisma.tenant.findUnique({ where: { id: tid }, include: { businesses: true, settings: true, plan: true } }),
-    branches: await prisma.branch.findMany({ where: { tenantId: tid } }),
-    customers: await prisma.customer.findMany({ where: { tenantId: tid } }),
-    suppliers: await prisma.supplier.findMany({ where: { tenantId: tid } }),
-    products: await prisma.product.findMany({ where: { tenantId: tid }, include: { variants: true } }),
-    exportedAt: rec.createdAt.toISOString(),
-  };
-  return ok(res, payload);
-});
+saasRouter.get("/subscription", requirePermission("plan.manage"), saasController.getSubscription);
+saasRouter.post("/subscription", requirePermission("plan.manage"), validateBody(changePlanSchema), saasController.changePlan);
+saasRouter.get("/api-keys", requirePermission("integration.manage"), saasController.listApiKeys);
+saasRouter.post("/api-keys", requirePermission("integration.manage"), validateBody(createApiKeySchema), saasController.createApiKey);
+saasRouter.post("/api-keys/:id/revoke", requirePermission("integration.manage"), saasController.revokeApiKey);
+saasRouter.post("/backup", requirePermission("backup.manage"), validateBody(createBackupSchema), saasController.createBackup);
+saasRouter.get("/backups", requirePermission("backup.manage"), saasController.listBackups);
+saasRouter.get("/backups/:id/download", requirePermission("backup.manage"), saasController.downloadBackup);

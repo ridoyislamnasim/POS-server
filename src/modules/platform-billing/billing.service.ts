@@ -789,3 +789,8 @@ export async function assertTenantApiKeysAllowed(tenantId: string) {
     throw Object.assign(new Error(PAYMENT_REQUIRED_MESSAGE), { code: "PAYMENT_REQUIRED" });
   }
 }
+
+export async function listActivePlans() {
+  return prisma.plan.findMany({ where: { active: true }, orderBy: { price: "asc" } });
+}
+
