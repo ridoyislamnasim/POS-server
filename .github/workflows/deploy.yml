@@ -181,7 +181,7 @@ jobs:
 
   # ── Build ─────────────────────────────────────────────────
   build:
-    needs: [test, lint]
+    needs: [resolve-env, test, lint]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
