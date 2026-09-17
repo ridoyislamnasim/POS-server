@@ -12,7 +12,7 @@ import { errorMiddleware, notFoundMiddleware } from "./middleware/error.middlewa
 import { registerRoutes } from "./app/routes.js";
 import { env } from "./config/env.js";
 
-const originAllowlist = env.webOrigin;
+const originAllowlist = env.allowedFrontendOrigins;
 
 export function createApp() {
   const app = express();
