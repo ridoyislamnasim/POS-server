@@ -86,6 +86,17 @@ jobs:
           echo "User: ${{ steps.env.outputs.do_user }}"
           echo "Backend URL: ${{ steps.env.outputs.backend_url }}"
 
+      - name: Validate required secrets
+        run: |
+          if [ -z "${{ steps.env.outputs.do_host }}" ]; then
+            echo "::error::DO_HOST secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ steps.env.outputs.do_user }}" ]; then
+            echo "::error::DO_USER secret is not set"
+            exit 1
+          fi
+
   # ── Test ──────────────────────────────────────────────────
   test:
     needs: [resolve-env]
