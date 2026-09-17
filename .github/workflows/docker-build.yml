@@ -33,9 +33,11 @@ concurrency:
 env:
   NODE_VERSION: "22"
   PNPM_VERSION: "9"
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }}
 
 jobs:
-  # ── Resolve deployment environment ────────────────────────────────────
+  # ── Resolve deployment environment ────────────────────────────────
   resolve:
     runs-on: ubuntu-latest
     outputs:
@@ -70,7 +72,7 @@ jobs:
               ;;
           esac
 
-  # ── Build & Push Backend ──────────────────────────────────────────────
+  # ── Build & Push Backend ──────────────────────────────────────────
   build-backend:
     needs: [resolve]
     runs-on: ubuntu-latest
@@ -140,7 +142,7 @@ jobs:
             org.opencontainers.image.environment=${{ needs.resolve.outputs.environment }}
             org.opencontainers.image.url=${{ needs.resolve.outputs.backend_url }}
 
-  # ── Build & Push Frontend ────────────────────────────────────────────
+  # ── Build & Push Frontend ────────────────────────────────────────
   build-frontend:
     needs: [resolve]
     runs-on: ubuntu-latest
@@ -208,31 +210,81 @@ jobs:
             org.opencontainers.image.environment=${{ needs.resolve.outputs.environment }}
             org.opencontainers.image.url=${{ needs.resolve.outputs.backend_url }}
 
-  # ── Deploy via SSH ────────────────────────────────────────────────────
+  # ── Deploy via Docker Compose ───────────────────────────────────
+  deploy-docker:
+    needs: [resolve, build-backend, build-frontend]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    environment: ${{ needs.resolve.outputs.environment }}
+    steps:
+      - name: Configure SSH
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' '${{ secrets.DO_SSH_KEY }}' > ~/.ssh/digitalocean
+          chmod 600 ~/.ssh/digitalocean
+          ssh-keyscan -p "${{ secrets.DO_PORT }}" "${{ secrets.DO_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Pull latest images and restart
+        shell: bash
+        run: |
+          ssh -i ~/.ssh/digitalocean -p "${{ secrets.DO_PORT }}" \
+            "${{ secrets.DO_USER }}@${{ secrets.DO_HOST }}" \
+            "cd ~/app && \
+             docker compose pull && \
+             docker compose up -d --remove-orphans && \
+             docker image prune -f && \
+             echo 'Docker deployment complete on ${{ secrets.DO_HOST }}'"
+
+      - name: Verify services
+        shell: bash
+        run: |
+          sleep 5
+          curl -sf ${{ secrets.BACKEND_URL }}/api/health && echo "Backend healthy" || (echo "Backend failed" && exit 1)
+          curl -sf ${{ secrets.FRONTEND_URL }}/ && echo "Frontend healthy" || (echo "Frontend failed" && exit 1)
+
+  # ── Deploy via SSH ────────────────────────────────────────────────
   deploy-ssh:
     needs: [resolve, build-backend, build-frontend]
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
     environment: ${{ needs.resolve.outputs.environment }}
     steps:
-      - name: Configure SSH for DigitalOcean
+      - name: Configure SSH
+        shell: bash
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/digitalocean
+          printf '%s\n' '${{ secrets.DO_SSH_KEY }}' > ~/.ssh/digitalocean
           chmod 600 ~/.ssh/digitalocean
-          ssh-keyscan -p ${{ secrets.DO_PORT }} ${{ secrets.DO_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -p "${{ secrets.DO_PORT }}" "${{ secrets.DO_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Pull latest images and restart
+      - name: Deploy backend via SSH
+        shell: bash
         run: |
-          ssh -p ${{ secrets.DO_PORT }} ${{ secrets.DO_USER }}@${{ secrets.DO_HOST }} \
-            "cd ~/app && \
-             docker compose pull && \
-             docker compose up -d --remove-orphans && \
-             docker image prune -f && \
-             echo 'Deployment complete on ${{ secrets.DO_HOST }}'"
+          ssh -i ~/.ssh/digitalocean -p "${{ secrets.DO_PORT }}" \
+            "${{ secrets.DO_USER }}@${{ secrets.DO_HOST }}" \
+            "cd ~/app/backend && \
+             corepack enable && \
+             corepack prepare pnpm@9 --activate && \
+             pnpm install --frozen-lockfile --prod && \
+             pm2 restart backend --update-env || \
+             pm2 start dist/index.js --name backend --update-env"
 
-      - name: Verify services
+      - name: Deploy frontend via SSH
+        shell: bash
+        run: |
+          ssh -i ~/.ssh/digitalocean -p "${{ secrets.DO_PORT }}" \
+            "${{ secrets.DO_USER }}@${{ secrets.DO_HOST }}" \
+            "cd ~/app/frontend && \
+             corepack enable && \
+             corepack prepare pnpm@9 --activate && \
+             pnpm install --frozen-lockfile --prod && \
+             pm2 restart frontend --update-env || \
+             pm2 start server.js --name frontend --update-env"
+
+      - name: Verify deployment
+        shell: bash
         run: |
           sleep 5
-          curl -sf ${{ secrets.BACKEND_URL }}/api/health && echo "✅ Backend healthy" || (echo "❌ Backend failed" && exit 1)
-          curl -sf ${{ secrets.FRONTEND_URL }}/ && echo "✅ Frontend healthy" || (echo "❌ Frontend failed" && exit 1)
+          curl -sf ${{ secrets.BACKEND_URL }}/api/health && echo "Backend healthy" || (echo "Backend failed" && exit 1)
+          curl -sf ${{ secrets.FRONTEND_URL }}/ && echo "Frontend healthy" || (echo "Frontend failed" && exit 1)

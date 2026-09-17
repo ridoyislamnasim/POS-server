@@ -33,7 +33,7 @@ env:
   IMAGE_PREFIX: ${{ github.repository }}
 
 jobs:
-  # ── Determine target environment ──────────────────────────────────────
+  # ── Resolve target environment ──────────────────────────────────────
   resolve-env:
     runs-on: ubuntu-latest
     outputs:
@@ -79,7 +79,7 @@ jobs:
               ;;
           esac
 
-  # ── Test ──────────────────────────────────────────────────────────────
+  # ── Test ──────────────────────────────────────────────────────────
   test:
     needs: [resolve-env]
     runs-on: ubuntu-latest
@@ -148,7 +148,7 @@ jobs:
           JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
           NODE_ENV: test
 
-  # ── Lint ──────────────────────────────────────────────────────────────
+  # ── Lint ──────────────────────────────────────────────────────────
   lint:
     needs: [resolve-env]
     runs-on: ubuntu-latest
@@ -177,7 +177,7 @@ jobs:
         run: npx tsc --noEmit
         working-directory: backend
 
-  # ── Build ─────────────────────────────────────────────────────────────
+  # ── Build ─────────────────────────────────────────────────────────
   build:
     needs: [test, lint]
     runs-on: ubuntu-latest
@@ -223,7 +223,7 @@ jobs:
           path: backend/dist/
           retention-days: 5
 
-  # ── Deploy to DigitalOcean ────────────────────────────────────────────
+  # ── Deploy to DigitalOcean ────────────────────────────────────────
   deploy:
     needs: [resolve-env, build, test]
     runs-on: ubuntu-latest
@@ -240,43 +240,51 @@ jobs:
           path: backend/dist/
 
       - name: Configure SSH for DigitalOcean
+        shell: bash
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/digitalocean
+          printf '%s\n' '${{ secrets.DO_SSH_KEY }}' > ~/.ssh/digitalocean
           chmod 600 ~/.ssh/digitalocean
-          ssh-keyscan -p ${{ secrets.DO_PORT }} ${{ secrets.DO_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -p "${{ secrets.DO_PORT }}" "${{ secrets.DO_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Deploy to DigitalOcean Droplet
+      - name: Upload backend to DigitalOcean
+        shell: bash
         run: |
-          ssh -p ${{ secrets.DO_PORT }} ${{ secrets.DO_USER }}@${{ secrets.DO_HOST }} \
-            "mkdir -p ~/app/backend/dist && cd ~/app/backend && \
-             echo 'Deploying ${{ needs.resolve-env.outputs.environment }} build...'"
-
-          scp -P ${{ secrets.DO_PORT }} -r backend/dist/* \
+          rsync -az --delete \
+            --exclude='node_modules' \
+            --exclude='.env' \
+            --exclude='.git' \
+            -e "ssh -i ~/.ssh/digitalocean -p ${{ secrets.DO_PORT }}" \
+            backend/dist/ \
             ${{ secrets.DO_USER }}@${{ secrets.DO_HOST }}:~/app/backend/dist/
 
-          ssh -p ${{ secrets.DO_PORT }} ${{ secrets.DO_USER }}@${{ secrets.DO_HOST }} \
+      - name: Install pnpm, production dependencies and restart on droplet
+        shell: bash
+        run: |
+          ssh -i ~/.ssh/digitalocean -p "${{ secrets.DO_PORT }}" \
+            "${{ secrets.DO_USER }}@${{ secrets.DO_HOST }}" \
             "cd ~/app/backend && \
-             export NODE_ENV=production && \
-             export PORT=${{ secrets.PORT || 4000 }} && \
-             export WEB_ORIGIN=${{ secrets.WEB_ORIGIN }} && \
-             export DATABASE_URL=${{ secrets.DATABASE_URL }} && \
-             export JWT_SECRET=${{ secrets.JWT_SECRET }} && \
-             export JWT_REFRESH_SECRET=${{ secrets.JWT_REFRESH_SECRET }} && \
-             export PLATFORM_BOOTSTRAP_TOKEN=${{ secrets.PLATFORM_BOOTSTRAP_TOKEN }} && \
-             export ALLOW_PLATFORM_BOOTSTRAP=${{ secrets.ALLOW_PLATFORM_BOOTSTRAP}} && \
+             corepack enable && \
+             corepack prepare pnpm@9 --activate && \
              pnpm install --frozen-lockfile --prod && \
-             pm2 restart backend || pm2 start dist/index.js --name backend && \
-             echo 'Deploy complete on ${{ secrets.DO_HOST }}'"
+             pm2 restart backend --update-env || \
+             pm2 start dist/index.js --name backend --update-env && \
+             pm2 save"
 
       - name: Verify deployment
+        shell: bash
         run: |
-          sleep 5
-          curl -sf ${{ secrets.BACKEND_URL }}/api/health && \
-            echo "✅ Backend healthy at ${{ secrets.BACKEND_URL }}" || \
-            (echo "❌ Backend not ready" && exit 1)
+          for i in 1 2 3 4 5; do
+            sleep 3
+            if curl -fsS "${{ secrets.BACKEND_URL }}/api/health"; then
+              echo "Backend healthy at ${{ secrets.BACKEND_URL }}"
+              exit 0
+            fi
+          done
+          echo "Backend health check failed"
+          exit 1
 
-  # ── Docker Build & Push ───────────────────────────────────────────────
+  # ── Docker Build & Push ───────────────────────────────────────────
   docker:
     needs: [test, lint]
     runs-on: ubuntu-latest
@@ -285,24 +293,41 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: backend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install
+        working-directory: backend
+
+      - name: Unlock Prisma engine
+        run: node scripts/unlock-prisma-engine.mjs
+        working-directory: backend
+        env:
+          PORT: ${{ secrets.PORT || 4000 }}
+
+      - name: Prisma generate + build
+        run: pnpm build
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
+
       - name: Login to Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Determine image tag
-        id: tag
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            TAG="${{ github.ref_name }}"
-          elif [ "${{ needs.resolve-env.outputs.environment }}" = "production" ]; then
-            TAG="latest"
-          else
-            TAG="${{ github.sha }}"
-          fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Build and push backend image
         uses: docker/build-push-action@v5
@@ -311,7 +336,7 @@ jobs:
           file: ./backend/Dockerfile
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/backend:${{ steps.tag.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/backend:${{ github.sha }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/backend:latest
           build-args: |
             NODE_ENV=production
