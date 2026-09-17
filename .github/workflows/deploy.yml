@@ -128,6 +128,11 @@ jobs:
         env:
           DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
 
+      - name: Prisma migrate
+        run: pnpm prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
+
       - name: Type check
         run: npx tsc --noEmit
 
