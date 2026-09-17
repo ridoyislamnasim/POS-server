@@ -252,58 +252,73 @@ jobs:
 
       - name: Configure SSH for DigitalOcean
         shell: bash
+        env:
+          DO_HOST: ${{ needs.resolve-env.outputs.do_host }}
+          DO_PORT: ${{ needs.resolve-env.outputs.do_port }}
+          DO_USER: ${{ needs.resolve-env.outputs.do_user }}
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
         run: |
+          test -n "$DO_HOST"  || { echo "::error::DO_HOST is empty"; exit 1; }
+          test -n "$DO_USER"  || { echo "::error::DO_USER is empty"; exit 1; }
+          test -n "$DO_PORT"  || { echo "::error::DO_PORT is empty"; exit 1; }
+          [[ "$DO_PORT" =~ ^[0-9]+$ ]] || { echo "::error::DO_PORT is not numeric: $DO_PORT"; exit 1; }
+
           mkdir -p ~/.ssh
-          printf '%s\n' '${{ secrets.DO_SSH_KEY }}' > ~/.ssh/digitalocean
+          printf '%s\n' "$DO_SSH_KEY" > ~/.ssh/digitalocean
           chmod 600 ~/.ssh/digitalocean
-          ssh-keyscan -p "${{ needs.resolve-env.outputs.do_port }}" "${{ needs.resolve-env.outputs.do_host }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -p "$DO_PORT" "$DO_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          echo "SSH configured: host=$DO_HOST user=$DO_USER port=$DO_PORT"
 
       - name: Backup current version on server
         shell: bash
+        env:
+          DO_HOST: ${{ needs.resolve-env.outputs.do_host }}
+          DO_PORT: ${{ needs.resolve-env.outputs.do_port }}
+          DO_USER: ${{ needs.resolve-env.outputs.do_user }}
         run: |
-          ssh -i ~/.ssh/digitalocean \
-            -p "${{ needs.resolve-env.outputs.do_port }}" \
-            "${{ needs.resolve-env.outputs.do_user }}@${{ needs.resolve-env.outputs.do_host }}" \
-            'set -e
+          ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" '
+            set -e
             cd ~/app/backend
-
             if [ -d dist ]; then
               rm -rf dist.backup
               mv dist dist.backup
               echo "Backed up current dist to dist.backup"
             fi
-
-            mkdir -p dist'
+            mkdir -p dist
+          '
 
       - name: Upload backend to DigitalOcean
         shell: bash
+        env:
+          DO_HOST: ${{ needs.resolve-env.outputs.do_host }}
+          DO_PORT: ${{ needs.resolve-env.outputs.do_port }}
+          DO_USER: ${{ needs.resolve-env.outputs.do_user }}
         run: |
-          ssh -i ~/.ssh/digitalocean \
-            -p "${{ needs.resolve-env.outputs.do_port }}" \
-            "${{ needs.resolve-env.outputs.do_user }}@${{ needs.resolve-env.outputs.do_host }}" \
-            "mkdir -p ~/app/backend"
+          ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" "mkdir -p ~/app/backend"
 
           rsync -az --delete \
             --exclude='node_modules' \
             --exclude='.env' \
             --exclude='.git' \
-            -e "ssh -i ~/.ssh/digitalocean -p ${{ needs.resolve-env.outputs.do_port }}" \
+            -e "ssh -i ~/.ssh/digitalocean -p $DO_PORT" \
             artifact/dist/ \
-            "${{ needs.resolve-env.outputs.do_user }}@${{ needs.resolve-env.outputs.do_host }}:~/app/backend/dist/"
+            "$DO_USER@$DO_HOST:~/app/backend/dist/"
 
-          scp -i ~/.ssh/digitalocean \
-            -P "${{ needs.resolve-env.outputs.do_port }}" \
+          scp -i ~/.ssh/digitalocean -P "$DO_PORT" \
             artifact/package.json \
             artifact/pnpm-lock.yaml \
-            "${{ needs.resolve-env.outputs.do_user }}@${{ needs.resolve-env.outputs.do_host }}:~/app/backend/"
+            "$DO_USER@$DO_HOST:~/app/backend/"
 
       - name: Install production dependencies and restart
         shell: bash
+        env:
+          DO_HOST: ${{ needs.resolve-env.outputs.do_host }}
+          DO_PORT: ${{ needs.resolve-env.outputs.do_port }}
+          DO_USER: ${{ needs.resolve-env.outputs.do_user }}
         run: |
-          ssh -i ~/.ssh/digitalocean \
-            -p "${{ needs.resolve-env.outputs.do_port }}" \
-            "${{ needs.resolve-env.outputs.do_user }}@${{ needs.resolve-env.outputs.do_host }}" \
-            'set -e
+          ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" '
+            set -e
             cd ~/app/backend
 
             corepack enable
@@ -317,20 +332,21 @@ jobs:
               pm2 start dist/index.js --name backend --update-env
             fi
 
-            pm2 save'
+            pm2 save
+          '
 
       - name: Verify deployment
         shell: bash
+        env:
+          BACKEND_URL: ${{ needs.resolve-env.outputs.backend_url }}
         run: |
           for i in 1 2 3 4 5 6 7 8 9 10; do
             sleep 3
-
-            if curl -fsS "${{ needs.resolve-env.outputs.backend_url }}/api/health"; then
+            if curl -fsS "$BACKEND_URL/api/health"; then
               echo "Backend healthy"
               exit 0
             fi
           done
-
           echo "Backend health check failed"
           exit 1
 
@@ -343,19 +359,32 @@ jobs:
     steps:
       - name: Configure SSH for DigitalOcean
         shell: bash
+        env:
+          DO_HOST: ${{ needs.resolve-env.outputs.do_host }}
+          DO_PORT: ${{ needs.resolve-env.outputs.do_port }}
+          DO_USER: ${{ needs.resolve-env.outputs.do_user }}
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
         run: |
+          test -n "$DO_HOST"  || { echo "::error::DO_HOST is empty"; exit 1; }
+          test -n "$DO_USER"  || { echo "::error::DO_USER is empty"; exit 1; }
+          test -n "$DO_PORT"  || { echo "::error::DO_PORT is empty"; exit 1; }
+
           mkdir -p ~/.ssh
-          printf '%s\n' '${{ secrets.DO_SSH_KEY }}' > ~/.ssh/digitalocean
+          printf '%s\n' "$DO_SSH_KEY" > ~/.ssh/digitalocean
           chmod 600 ~/.ssh/digitalocean
-          ssh-keyscan -p "${{ needs.resolve-env.outputs.do_port }}" "${{ needs.resolve-env.outputs.do_host }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -p "$DO_PORT" "$DO_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          echo "SSH configured: host=$DO_HOST user=$DO_USER port=$DO_PORT"
 
       - name: Rollback to previous version
         shell: bash
+        env:
+          DO_HOST: ${{ needs.resolve-env.outputs.do_host }}
+          DO_PORT: ${{ needs.resolve-env.outputs.do_port }}
+          DO_USER: ${{ needs.resolve-env.outputs.do_user }}
         run: |
-          ssh -i ~/.ssh/digitalocean \
-            -p "${{ needs.resolve-env.outputs.do_port }}" \
-            "${{ needs.resolve-env.outputs.do_user }}@${{ needs.resolve-env.outputs.do_host }}" \
-            'set -e
+          ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" '
+            set -e
             cd ~/app/backend
 
             if [ -d dist.backup ]; then
@@ -374,20 +403,21 @@ jobs:
             else
               echo "No backup found, cannot rollback"
               exit 1
-            fi'
+            fi
+          '
 
       - name: Verify rollback
         shell: bash
+        env:
+          BACKEND_URL: ${{ needs.resolve-env.outputs.backend_url }}
         run: |
           for i in 1 2 3 4 5 6 7 8 9 10; do
             sleep 3
-
-            if curl -fsS "${{ needs.resolve-env.outputs.backend_url }}/api/health"; then
+            if curl -fsS "$BACKEND_URL/api/health"; then
               echo "Backend healthy after rollback"
               exit 0
             fi
           done
-
           echo "Backend health check failed after rollback"
           exit 1
 
