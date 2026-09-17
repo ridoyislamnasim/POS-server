@@ -9,29 +9,117 @@ on:
       - "frontend/**"
       - "Dockerfile*"
       - "docker-compose*"
+      - ".github/workflows/docker-build.yml"
   workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deploy environment"
+        required: true
+        default: "production"
+        type: choice
+        options:
+          - production
+          - staging
+      registry:
+        description: "Container registry URL"
+        required: false
+        default: "ghcr.io"
+        type: string
 
 concurrency:
   group: docker-build-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_PREFIX: ${{ github.repository }}
+  NODE_VERSION: "22"
+  PNPM_VERSION: "9"
 
 jobs:
+  # ── Resolve deployment environment ────────────────────────────────────
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.env.outputs.value }}
+      backend_url: ${{ steps.env.outputs.backend_url }}
+      do_host: ${{ steps.env.outputs.do_host }}
+      do_port: ${{ steps.env.outputs.do_port }}
+      do_user: ${{ steps.env.outputs.do_user }}
+    steps:
+      - name: Resolve environment
+        id: env
+        run: |
+          ENV="${{ github.event.inputs.environment || 'production' }}"
+          if [ "${{ github.ref }}" = "refs/heads/main" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            ENV="production"
+          fi
+          echo "value=$ENV" >> "$GITHUB_OUTPUT"
+          echo "environment=$ENV" >> "$GITHUB_OUTPUT"
+
+          case "$ENV" in
+            production)
+              echo "backend_url=${{ secrets.BACKEND_URL }}" >> "$GITHUB_OUTPUT"
+              echo "do_host=${{ secrets.DO_HOST }}" >> "$GITHUB_OUTPUT"
+              echo "do_port=${{ secrets.DO_PORT }}" >> "$GITHUB_OUTPUT"
+              echo "do_user=${{ secrets.DO_USER }}" >> "$GITHUB_OUTPUT"
+              ;;
+            staging)
+              echo "backend_url=${{ secrets.BACKEND_URL_STAGING }}" >> "$GITHUB_OUTPUT"
+              echo "do_host=${{ secrets.DO_HOST_STAGING }}" >> "$GITHUB_OUTPUT"
+              echo "do_port=${{ secrets.DO_PORT }}" >> "$GITHUB_OUTPUT"
+              echo "do_user=${{ secrets.DO_USER }}" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+  # ── Build & Push Backend ──────────────────────────────────────────────
   build-backend:
+    needs: [resolve]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: backend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install
+        working-directory: backend
+
+      - name: Build backend
+        run: |
+          node scripts/unlock-prisma-engine.mjs
+          pnpm build
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
+          PORT: ${{ secrets.PORT || 4000 }}
+
       - name: Login to Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ${{ github.event.inputs.registry || env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine image tag
+        id: tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="${{ github.sha }}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Build and push backend image
         uses: docker/build-push-action@v5
@@ -40,26 +128,66 @@ jobs:
           file: ./backend/Dockerfile
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/backend:latest
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/backend:${{ github.sha }}
+            ${{ github.event.inputs.registry || env.REGISTRY }}/${{ github.repository }}/backend:${{ steps.tag.outputs.tag }}
+            ${{ github.event.inputs.registry || env.REGISTRY }}/${{ github.repository }}/backend:latest
           build-args: |
             NODE_ENV=production
-            PORT=4000
+            PORT=${{ secrets.PORT || 4000 }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.title=pos-backend
+            org.opencontainers.image.environment=${{ needs.resolve.outputs.environment }}
+            org.opencontainers.image.url=${{ needs.resolve.outputs.backend_url }}
 
+  # ── Build & Push Frontend ────────────────────────────────────────────
   build-frontend:
+    needs: [resolve]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install
+        working-directory: frontend
+
+      - name: Build frontend
+        run: pnpm build
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_APP_ENV: ${{ needs.resolve.outputs.environment }}
+          NEXT_PUBLIC_API_URL: ${{ needs.resolve.outputs.backend_url }}
+
       - name: Login to Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ${{ github.event.inputs.registry || env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine image tag
+        id: tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="${{ github.sha }}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Build and push frontend image
         uses: docker/build-push-action@v5
@@ -68,10 +196,43 @@ jobs:
           file: ./frontend/Dockerfile
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/frontend:latest
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/frontend:${{ github.sha }}
+            ${{ github.event.inputs.registry || env.REGISTRY }}/${{ github.repository }}/frontend:${{ steps.tag.outputs.tag }}
+            ${{ github.event.inputs.registry || env.REGISTRY }}/${{ github.repository }}/frontend:latest
           build-args: |
-            NEXT_PUBLIC_APP_ENV=production
-            NEXT_PUBLIC_API_URL=https://server.shohojhisab.com
+            NEXT_PUBLIC_APP_ENV=${{ needs.resolve.outputs.environment }}
+            NEXT_PUBLIC_API_URL=${{ needs.resolve.outputs.backend_url }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.title=pos-frontend
+            org.opencontainers.image.environment=${{ needs.resolve.outputs.environment }}
+            org.opencontainers.image.url=${{ needs.resolve.outputs.backend_url }}
+
+  # ── Deploy via SSH ────────────────────────────────────────────────────
+  deploy-ssh:
+    needs: [resolve, build-backend, build-frontend]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    environment: ${{ needs.resolve.outputs.environment }}
+    steps:
+      - name: Configure SSH for DigitalOcean
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/digitalocean
+          chmod 600 ~/.ssh/digitalocean
+          ssh-keyscan -p ${{ secrets.DO_PORT }} ${{ secrets.DO_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Pull latest images and restart
+        run: |
+          ssh -p ${{ secrets.DO_PORT }} ${{ secrets.DO_USER }}@${{ secrets.DO_HOST }} \
+            "cd ~/app && \
+             docker compose pull && \
+             docker compose up -d --remove-orphans && \
+             docker image prune -f && \
+             echo 'Deployment complete on ${{ secrets.DO_HOST }}'"
+
+      - name: Verify services
+        run: |
+          sleep 5
+          curl -sf ${{ secrets.BACKEND_URL }}/api/health && echo "✅ Backend healthy" || (echo "❌ Backend failed" && exit 1)
+          curl -sf ${{ secrets.FRONTEND_URL }}/ && echo "✅ Frontend healthy" || (echo "❌ Frontend failed" && exit 1)

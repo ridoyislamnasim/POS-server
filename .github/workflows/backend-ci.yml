@@ -11,13 +11,77 @@ on:
       - "backend/**"
       - ".github/workflows/backend-ci.yml"
     branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deploy environment"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - production
 
 concurrency:
-  group: backend-ci-${{ github.ref }}
+  group: backend-ci-${{ github.ref }}-${{ github.workflow }}
   cancel-in-progress: true
 
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "9"
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }}
+
 jobs:
+  # ── Determine target environment ──────────────────────────────────────
+  resolve-env:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.env.outputs.value }}
+      do_host: ${{ steps.env.outputs.do_host }}
+      do_port: ${{ steps.env.outputs.do_port }}
+      do_user: ${{ steps.env.outputs.do_user }}
+      backend_url: ${{ steps.env.outputs.backend_url }}
+      web_origin: ${{ steps.env.outputs.web_origin }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve environment
+        id: env
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENV="${{ github.event.inputs.environment }}"
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            ENV="production"
+          elif [ "${{ github.ref }}" = "refs/heads/develop" ]; then
+            ENV="staging"
+          else
+            ENV="staging"
+          fi
+          echo "value=$ENV" >> "$GITHUB_OUTPUT"
+          echo "environment=$ENV" >> "$GITHUB_OUTPUT"
+
+          case "$ENV" in
+            production)
+              echo "do_host=${{ secrets.DO_HOST }}" >> "$GITHUB_OUTPUT"
+              echo "do_port=${{ secrets.DO_PORT }}" >> "$GITHUB_OUTPUT"
+              echo "do_user=${{ secrets.DO_USER }}" >> "$GITHUB_OUTPUT"
+              echo "backend_url=${{ secrets.BACKEND_URL }}" >> "$GITHUB_OUTPUT"
+              echo "web_origin=http://localhost:3020,https://shohojhisab.com,https://mobile.shohojhisab.com" >> "$GITHUB_OUTPUT"
+              ;;
+            staging)
+              echo "do_host=${{ secrets.DO_HOST_STAGING }}" >> "$GITHUB_OUTPUT"
+              echo "do_port=${{ secrets.DO_PORT }}" >> "$GITHUB_OUTPUT"
+              echo "do_user=${{ secrets.DO_USER }}" >> "$GITHUB_OUTPUT"
+              echo "backend_url=${{ secrets.BACKEND_URL_STAGING }}" >> "$GITHUB_OUTPUT"
+              echo "web_origin=http://localhost:3020" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+  # ── Test ──────────────────────────────────────────────────────────────
   test:
+    needs: [resolve-env]
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -40,13 +104,13 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: ${{ env.PNPM_VERSION }}
           run_install: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
           cache-dependency-path: backend/pnpm-lock.yaml
 
@@ -60,7 +124,7 @@ jobs:
         run: node scripts/unlock-prisma-engine.mjs
         working-directory: backend
         env:
-          PORT: 4000
+          PORT: ${{ secrets.PORT || 4000 }}
 
       - name: Prisma generate
         run: pnpm db:generate
@@ -77,14 +141,16 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
-          WEB_ORIGIN: http://localhost:3020,https://shohojhisab.com,https://mobile.shohojhisab.com
+          WEB_ORIGIN: ${{ needs.resolve-env.outputs.web_origin }}
           ALLOW_PLATFORM_BOOTSTRAP: 1
-          PLATFORM_BOOTSTRAP_TOKEN: test-token-ci
-          JWT_SECRET: test-jwt-secret-ci
-          JWT_REFRESH_SECRET: test-jwt-refresh-secret-ci
+          PLATFORM_BOOTSTRAP_TOKEN: ${{ secrets.PLATFORM_BOOTSTRAP_TOKEN }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
           NODE_ENV: test
 
+  # ── Lint ──────────────────────────────────────────────────────────────
   lint:
+    needs: [resolve-env]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -93,13 +159,13 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: ${{ env.PNPM_VERSION }}
           run_install: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
           cache-dependency-path: backend/pnpm-lock.yaml
 
@@ -111,6 +177,7 @@ jobs:
         run: npx tsc --noEmit
         working-directory: backend
 
+  # ── Build ─────────────────────────────────────────────────────────────
   build:
     needs: [test, lint]
     runs-on: ubuntu-latest
@@ -121,13 +188,13 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: ${{ env.PNPM_VERSION }}
           run_install: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
           cache-dependency-path: backend/pnpm-lock.yaml
 
@@ -141,7 +208,7 @@ jobs:
         run: node scripts/unlock-prisma-engine.mjs
         working-directory: backend
         env:
-          PORT: 4000
+          PORT: ${{ secrets.PORT || 4000 }}
 
       - name: Prisma generate + TypeScript build
         run: pnpm build
@@ -152,6 +219,105 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: backend-dist
+          name: backend-dist-${{ needs.resolve-env.outputs.environment }}
           path: backend/dist/
           retention-days: 5
+
+  # ── Deploy to DigitalOcean ────────────────────────────────────────────
+  deploy:
+    needs: [resolve-env, build, test]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-dist-${{ needs.resolve-env.outputs.environment }}
+          path: backend/dist/
+
+      - name: Configure SSH for DigitalOcean
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/digitalocean
+          chmod 600 ~/.ssh/digitalocean
+          ssh-keyscan -p ${{ secrets.DO_PORT }} ${{ secrets.DO_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Deploy to DigitalOcean Droplet
+        run: |
+          ssh -p ${{ secrets.DO_PORT }} ${{ secrets.DO_USER }}@${{ secrets.DO_HOST }} \
+            "mkdir -p ~/app/backend/dist && cd ~/app/backend && \
+             echo 'Deploying ${{ needs.resolve-env.outputs.environment }} build...'"
+
+          scp -P ${{ secrets.DO_PORT }} -r backend/dist/* \
+            ${{ secrets.DO_USER }}@${{ secrets.DO_HOST }}:~/app/backend/dist/
+
+          ssh -p ${{ secrets.DO_PORT }} ${{ secrets.DO_USER }}@${{ secrets.DO_HOST }} \
+            "cd ~/app/backend && \
+             export NODE_ENV=production && \
+             export PORT=${{ secrets.PORT || 4000 }} && \
+             export WEB_ORIGIN=${{ secrets.WEB_ORIGIN }} && \
+             export DATABASE_URL=${{ secrets.DATABASE_URL }} && \
+             export JWT_SECRET=${{ secrets.JWT_SECRET }} && \
+             export JWT_REFRESH_SECRET=${{ secrets.JWT_REFRESH_SECRET }} && \
+             export PLATFORM_BOOTSTRAP_TOKEN=${{ secrets.PLATFORM_BOOTSTRAP_TOKEN }} && \
+             export ALLOW_PLATFORM_BOOTSTRAP=${{ secrets.ALLOW_PLATFORM_BOOTSTRAP}} && \
+             pnpm install --frozen-lockfile --prod && \
+             pm2 restart backend || pm2 start dist/index.js --name backend && \
+             echo 'Deploy complete on ${{ secrets.DO_HOST }}'"
+
+      - name: Verify deployment
+        run: |
+          sleep 5
+          curl -sf ${{ secrets.BACKEND_URL }}/api/health && \
+            echo "✅ Backend healthy at ${{ secrets.BACKEND_URL }}" || \
+            (echo "❌ Backend not ready" && exit 1)
+
+  # ── Docker Build & Push ───────────────────────────────────────────────
+  docker:
+    needs: [test, lint]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine image tag
+        id: tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${{ github.ref_name }}"
+          elif [ "${{ needs.resolve-env.outputs.environment }}" = "production" ]; then
+            TAG="latest"
+          else
+            TAG="${{ github.sha }}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/backend:${{ steps.tag.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/backend:latest
+          build-args: |
+            NODE_ENV=production
+            PORT=${{ secrets.PORT || 4000 }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.title=pos-backend
+            org.opencontainers.image.environment=${{ needs.resolve-env.outputs.environment }}
