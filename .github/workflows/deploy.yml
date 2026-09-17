@@ -64,14 +64,14 @@ jobs:
           case "$ENV" in
             production)
               echo "do_host=${{ secrets.DO_HOST }}" >> "$GITHUB_OUTPUT"
-              echo "do_port=${{ secrets.DO_PORT }}" >> "$GITHUB_OUTPUT"
+              echo "do_port=${{ secrets.DO_PORT || '22' }}" >> "$GITHUB_OUTPUT"
               echo "do_user=${{ secrets.DO_USER }}" >> "$GITHUB_OUTPUT"
               echo "backend_url=${{ secrets.BACKEND_URL }}" >> "$GITHUB_OUTPUT"
               echo "web_origin=http://localhost:3020,https://shohojhisab.com,https://mobile.shohojhisab.com" >> "$GITHUB_OUTPUT"
               ;;
             staging)
               echo "do_host=${{ secrets.DO_HOST_STAGING }}" >> "$GITHUB_OUTPUT"
-              echo "do_port=${{ secrets.DO_PORT }}" >> "$GITHUB_OUTPUT"
+              echo "do_port=${{ secrets.DO_PORT_STAGING || '22' }}" >> "$GITHUB_OUTPUT"
               echo "do_user=${{ secrets.DO_USER }}" >> "$GITHUB_OUTPUT"
               echo "backend_url=${{ secrets.BACKEND_URL_STAGING }}" >> "$GITHUB_OUTPUT"
               echo "web_origin=http://localhost:3020" >> "$GITHUB_OUTPUT"
