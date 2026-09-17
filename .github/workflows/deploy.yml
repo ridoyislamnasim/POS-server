@@ -2,77 +2,122 @@ name: Deploy Backend to DigitalOcean
 
 on:
   workflow_dispatch:
-
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+        default: "staging"
+      force_rollback:
+        description: "Force rollback to previous version"
+        required: false
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
       - "backend/**"
+  release:
+    types: [published]
 
 concurrency:
-  group: backend-deploy
+  group: backend-deploy-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "9"
+
 jobs:
-
-  # ── Rollback ────────────────────────────────────────────────────
-  # Rollback can be added here later if needed.
-
-
-  # ── Deploy Backend ──────────────────────────────────────────────
-  deploy-backend:
+  # ── Resolve deployment configuration ──────────────────────
+  resolve-config:
     runs-on: ubuntu-latest
-
+    outputs:
+      environment: ${{ steps.env.outputs.environment }}
+      do_host: ${{ steps.env.outputs.do_host }}
+      do_port: ${{ steps.env.outputs.do_port }}
+      do_user: ${{ steps.env.outputs.do_user }}
+      do_ssh_key: ${{ steps.env.outputs.do_ssh_key }}
+      backend_url: ${{ steps.env.outputs.backend_url }}
+      web_origin: ${{ steps.env.outputs.web_origin }}
     steps:
+      - name: Resolve configuration
+        id: env
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENV="${{ github.event.inputs.environment }}"
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            ENV="production"
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            ENV="production"
+          else
+            ENV="staging"
+          fi
+          echo "environment=$ENV" >> "$GITHUB_OUTPUT"
 
+          case "$ENV" in
+            production)
+              echo "do_host=${{ secrets.DO_HOST }}" >> "$GITHUB_OUTPUT"
+              echo "do_port=${{ secrets.DO_PORT }}" >> "$GITHUB_OUTPUT"
+              echo "do_user=${{ secrets.DO_USER }}" >> "$GITHUB_OUTPUT"
+              echo "do_ssh_key=${{ secrets.DO_SSH_KEY }}" >> "$GITHUB_OUTPUT"
+              echo "backend_url=${{ secrets.BACKEND_URL }}" >> "$GITHUB_OUTPUT"
+              echo "web_origin=${{ secrets.WEB_ORIGIN }}" >> "$GITHUB_OUTPUT"
+              ;;
+            staging)
+              echo "do_host=${{ secrets.DO_HOST_STAGING }}" >> "$GITHUB_OUTPUT"
+              echo "do_port=${{ secrets.DO_PORT }}" >> "$GITHUB_OUTPUT"
+              echo "do_user=${{ secrets.DO_USER }}" >> "$GITHUB_OUTPUT"
+              echo "do_ssh_key=${{ secrets.DO_SSH_KEY }}" >> "$GITHUB_OUTPUT"
+              echo "backend_url=${{ secrets.BACKEND_URL_STAGING }}" >> "$GITHUB_OUTPUT"
+              echo "web_origin=${{ secrets.WEB_ORIGIN }}" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+  # ── Deploy Backend via SSH ────────────────────────────────
+  deploy-backend:
+    needs: [resolve-config]
+    if: github.event.inputs.force_rollback == false
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-config.outputs.environment }}
+    steps:
       - name: Checkout
         uses: actions/checkout@v4
-
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: ${{ env.PNPM_VERSION }}
           run_install: false
-
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
-
-
-      - name: Install backend dependencies
-        working-directory: backend
-        run: pnpm install --frozen-lockfile
-
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Build backend
-        working-directory: backend
         run: |
+          pnpm install
           node scripts/unlock-prisma-engine.mjs
           pnpm build
+        working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          PORT: ${{ secrets.PORT }}
+          PORT: ${{ secrets.PORT || 4000 }}
           WEB_ORIGIN: ${{ secrets.WEB_ORIGIN }}
-
 
       - name: Configure SSH
         shell: bash
         run: |
           mkdir -p ~/.ssh
-
-          printf '%s\n' '${{ secrets.DO_SSH_KEY }}' > ~/.ssh/digitalocean
-
+          printf '%s\n' "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/digitalocean
           chmod 600 ~/.ssh/digitalocean
+          ssh-keyscan -p "${{ secrets.DO_PORT }}" "${{ secrets.DO_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-          ssh-keyscan \
-            -p "${{ secrets.DO_PORT }}" \
-            "${{ secrets.DO_HOST }}" \
-            >> ~/.ssh/known_hosts 2>/dev/null
-
-
-      - name: Upload backend to DigitalOcean
+      - name: Upload built backend to DigitalOcean
         shell: bash
         run: |
           rsync -az --delete \
@@ -80,58 +125,66 @@ jobs:
             --exclude='.env' \
             --exclude='.git' \
             -e "ssh -i ~/.ssh/digitalocean -p ${{ secrets.DO_PORT }}" \
-            backend/ \
-            ${{ secrets.DO_USER }}@${{ secrets.DO_HOST }}:~/app/backend/
+            backend/dist/ \
+            ${{ secrets.DO_USER }}@${{ secrets.DO_HOST }}:~/app/backend/dist/
 
-
-      - name: Install production dependencies and restart backend
+      - name: Install pnpm, production deps and restart on droplet
         shell: bash
         run: |
-          ssh \
-            -i ~/.ssh/digitalocean \
-            -p "${{ secrets.DO_PORT }}" \
+          ssh -i ~/.ssh/digitalocean -p "${{ secrets.DO_PORT }}" \
             "${{ secrets.DO_USER }}@${{ secrets.DO_HOST }}" \
             "cd ~/app/backend && \
+             corepack enable && \
+             corepack prepare pnpm@9 --activate && \
              pnpm install --frozen-lockfile --prod && \
              pm2 restart backend --update-env || \
              pm2 start dist/index.js --name backend --update-env && \
              pm2 save"
-
 
       - name: Verify backend health
         shell: bash
         run: |
           for i in 1 2 3 4 5; do
             sleep 3
-
             if curl -fsS "${{ secrets.BACKEND_URL }}/api/health"; then
-              echo "Backend is healthy."
+              echo "Backend healthy at ${{ secrets.BACKEND_URL }}"
               exit 0
             fi
           done
-
-          echo "Backend health check failed."
+          echo "Backend health check failed"
           exit 1
 
-
-  # ── Summary ─────────────────────────────────────────────────────
-  summary:
-    needs:
-      - deploy-backend
-
+  # ── Rollback ──────────────────────────────────────────────
+  rollback:
+    needs: [resolve-config]
+    if: github.event.inputs.force_rollback == true
     runs-on: ubuntu-latest
-
-    if: always()
-
+    environment: ${{ needs.resolve-config.outputs.environment }}
     steps:
+      - name: Rollback to previous version
+        shell: bash
+        run: |
+          ssh -i ~/.ssh/digitalocean -p "${{ secrets.DO_PORT }}" \
+            "${{ secrets.DO_USER }}@${{ secrets.DO_HOST }}" \
+            "cd ~/app/backend && \
+             pm2 deploy rollback production || \
+             pm2 restart backend --update-env"
+          echo "Rolled back to previous version on ${{ secrets.DO_HOST }}"
 
+  # ── Summary ───────────────────────────────────────────────
+  summary:
+    needs: [resolve-config, deploy-backend, rollback]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
       - name: Deployment summary
         run: |
           echo "## Backend Deployment Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Environment | production |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Environment | ${{ needs.resolve-config.outputs.environment }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Host | ${{ secrets.DO_HOST }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Backend URL | ${{ secrets.BACKEND_URL }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Backend Status | ${{ needs.deploy-backend.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Deploy Status | ${{ needs.deploy-backend.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Rollback | ${{ needs.rollback.result }} |" >> "$GITHUB_STEP_SUMMARY"

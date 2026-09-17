@@ -62,8 +62,9 @@ The CI workflows use a **resolve-config** job that reads secrets based on the ta
 
 | Trigger | Environment |
 |---------|-------------|
-| Push to `main` | Production (auto-deploy) |
-| Push to `develop` | Staging (auto-deploy) |
+| Push to `main` | Production (auto-deploy via SSH) |
+| Push to `develop` | Staging (auto-deploy via SSH) |
 | `workflow_dispatch` | User-selected environment |
 | Release published | Production |
-| Tag `v*` | Docker build & push |
+
+All deployments use SSH + `corepack`/`pnpm` on the DigitalOcean droplet. No Docker involved.
