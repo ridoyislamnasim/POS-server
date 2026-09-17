@@ -70,11 +70,7 @@ export const platformBootstrapService = {
     }
     checkRateLimit(meta.ip ?? "unknown");
 
-    // One-time gate: a platform admin already exists -> closed.
-    const existingPlatform = await prisma.userTenant.count({ where: { isPlatform: true } });
-    if (existingPlatform > 0) {
-      throw new AppError("FORBIDDEN", "Already initialized", 410);
-    }
+    // One-time gate: a platform super admin role already exists -> closed.
     const existingRoleCount = await prisma.userRole.count({
       where: { role: { key: "PLATFORM_SUPER_ADMIN", tenantId: null } },
     });
@@ -87,14 +83,16 @@ export const platformBootstrapService = {
 
     const tenant = input.tenantId
       ? await prisma.tenant.findUnique({ where: { id: input.tenantId }, select: { id: true } })
-      : await prisma.tenant.findFirst({ orderBy: { createdAt: "asc" }, select: { id: true } });
-    if (!tenant) {
-      throw new AppError("VALIDATION", "No tenant available for bootstrap", 400);
+      : null;
+    if (input.tenantId && !tenant) {
+      throw new AppError("VALIDATION", "Tenant not found", 400);
     }
 
     const user = await prisma.$transaction(async (tx) => {
       // Re-check inside the transaction to close the race between two concurrent calls.
-      const raced = await tx.userTenant.count({ where: { isPlatform: true } });
+      const raced = await tx.userRole.count({
+        where: { role: { key: "PLATFORM_SUPER_ADMIN", tenantId: null } },
+      });
       if (raced > 0) {
         throw new AppError("FORBIDDEN", "Already initialized", 410);
       }
@@ -124,7 +122,6 @@ export const platformBootstrapService = {
           name,
           email,
           passwordHash: await bcrypt.hash(input.password, 12),
-          tenants: { create: { tenantId: tenant.id, allBranches: true, isPlatform: true } },
           roles: { create: { roleId: role.id } },
         },
         include: { roles: { include: { role: true } }, tenants: true },
@@ -133,17 +130,17 @@ export const platformBootstrapService = {
     });
 
     await writeAudit({
-      tenantId: tenant.id,
+      tenantId: tenant?.id ?? null,
       userId: user.id,
       actorUserId: user.id,
       action: "platform.bootstrap",
       entityType: "User",
       entityId: user.id,
-      after: { email: user.email, tenantId: tenant.id },
+      after: { email: user.email, tenantId: tenant?.id ?? null },
       ip: meta.ip,
       userAgent: meta.userAgent,
     });
 
-    return { ...stripPassword(user), tenantId: tenant.id };
+    return { ...stripPassword(user), tenantId: tenant?.id ?? null };
   },
 };
