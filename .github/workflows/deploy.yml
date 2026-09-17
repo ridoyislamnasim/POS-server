@@ -1,4 +1,4 @@
-name: Deploy Frontend to DigitalOcean
+name: Deploy Backend to DigitalOcean
 
 on:
   workflow_dispatch:
@@ -6,10 +6,10 @@ on:
   push:
     branches: [main]
     paths:
-      - "frontend/**"
+      - "backend/**"
 
 concurrency:
-  group: frontend-deploy
+  group: backend-deploy
   cancel-in-progress: false
 
 jobs:
@@ -18,8 +18,8 @@ jobs:
   # Rollback can be added here later if needed.
 
 
-  # ── Deploy Frontend ─────────────────────────────────────────────
-  deploy-frontend:
+  # ── Deploy Backend ──────────────────────────────────────────────
+  deploy-backend:
     runs-on: ubuntu-latest
 
     steps:
@@ -41,17 +41,20 @@ jobs:
           node-version: 22
 
 
-      - name: Install frontend dependencies
-        working-directory: frontend
+      - name: Install backend dependencies
+        working-directory: backend
         run: pnpm install --frozen-lockfile
 
 
-      - name: Build frontend
-        working-directory: frontend
-        run: pnpm build
+      - name: Build backend
+        working-directory: backend
+        run: |
+          node scripts/unlock-prisma-engine.mjs
+          pnpm build
         env:
-          NEXT_PUBLIC_APP_ENV: production
-          NEXT_PUBLIC_API_URL: ${{ secrets.BACKEND_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PORT: ${{ secrets.PORT }}
+          WEB_ORIGIN: ${{ secrets.WEB_ORIGIN }}
 
 
       - name: Configure SSH
@@ -69,7 +72,7 @@ jobs:
             >> ~/.ssh/known_hosts 2>/dev/null
 
 
-      - name: Upload frontend to DigitalOcean
+      - name: Upload backend to DigitalOcean
         shell: bash
         run: |
           rsync -az --delete \
@@ -77,44 +80,44 @@ jobs:
             --exclude='.env' \
             --exclude='.git' \
             -e "ssh -i ~/.ssh/digitalocean -p ${{ secrets.DO_PORT }}" \
-            frontend/ \
-            ${{ secrets.DO_USER }}@${{ secrets.DO_HOST }}:~/app/frontend/
+            backend/ \
+            ${{ secrets.DO_USER }}@${{ secrets.DO_HOST }}:~/app/backend/
 
 
-      - name: Install production dependencies and restart frontend
+      - name: Install production dependencies and restart backend
         shell: bash
         run: |
           ssh \
             -i ~/.ssh/digitalocean \
             -p "${{ secrets.DO_PORT }}" \
             "${{ secrets.DO_USER }}@${{ secrets.DO_HOST }}" \
-            "cd ~/app/frontend && \
+            "cd ~/app/backend && \
              pnpm install --frozen-lockfile --prod && \
-             pm2 restart frontend --update-env || \
-             pm2 start server.js --name frontend --update-env && \
+             pm2 restart backend --update-env || \
+             pm2 start dist/index.js --name backend --update-env && \
              pm2 save"
 
 
-      - name: Verify frontend health
+      - name: Verify backend health
         shell: bash
         run: |
           for i in 1 2 3 4 5; do
             sleep 3
 
-            if curl -fsS "${{ secrets.FRONTEND_URL }}/"; then
-              echo "Frontend is healthy."
+            if curl -fsS "${{ secrets.BACKEND_URL }}/api/health"; then
+              echo "Backend is healthy."
               exit 0
             fi
           done
 
-          echo "Frontend health check failed."
+          echo "Backend health check failed."
           exit 1
 
 
   # ── Summary ─────────────────────────────────────────────────────
   summary:
     needs:
-      - deploy-frontend
+      - deploy-backend
 
     runs-on: ubuntu-latest
 
@@ -124,11 +127,11 @@ jobs:
 
       - name: Deployment summary
         run: |
-          echo "## Frontend Deployment Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Backend Deployment Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Environment | production |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Host | ${{ secrets.DO_HOST }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Frontend URL | ${{ secrets.FRONTEND_URL }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Frontend Status | ${{ needs.deploy-frontend.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Backend URL | ${{ secrets.BACKEND_URL }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Backend Status | ${{ needs.deploy-backend.result }} |" >> "$GITHUB_STEP_SUMMARY"
