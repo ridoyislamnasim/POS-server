@@ -2,14 +2,8 @@ name: Backend CI/CD
 
 on:
   push:
-    paths:
-      - "backend/**"
-      - ".github/workflows/deploy.yml"
     branches: [main, develop]
   pull_request:
-    paths:
-      - "backend/**"
-      - ".github/workflows/deploy.yml"
     branches: [main, develop]
   workflow_dispatch:
     inputs:
@@ -115,34 +109,30 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: pnpm
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Verify pnpm
+        run: |
+          node --version
+          pnpm --version
+          pwd
+          ls -la
 
       - name: Install dependencies
-        run: pnpm install
-        working-directory: backend
+        run: pnpm install --frozen-lockfile
         env:
           DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
 
-      - name: Unlock Prisma engine
-        run: node scripts/unlock-prisma-engine.mjs
-        working-directory: backend
-        env:
-          PORT: ${{ secrets.PORT || 4000 }}
-
       - name: Prisma generate
         run: pnpm db:generate
-        working-directory: backend
         env:
           DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
 
       - name: Type check
         run: npx tsc --noEmit
-        working-directory: backend
 
       - name: Run tests
         run: pnpm test
-        working-directory: backend
         env:
           DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
           WEB_ORIGIN: ${{ needs.resolve-env.outputs.web_origin }}
@@ -169,16 +159,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: pnpm
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Install dependencies
-        run: pnpm install
-        working-directory: backend
+        run: pnpm install --frozen-lockfile
 
       - name: Type check
         run: npx tsc --noEmit
-        working-directory: backend
 
   # ── Build ─────────────────────────────────────────────────
   build:
@@ -197,24 +184,15 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: pnpm
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Install dependencies
-        run: pnpm install
-        working-directory: backend
+        run: pnpm install --frozen-lockfile
         env:
           DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
 
-      - name: Unlock Prisma engine
-        run: node scripts/unlock-prisma-engine.mjs
-        working-directory: backend
-        env:
-          PORT: ${{ secrets.PORT || 4000 }}
-
-      - name: Prisma generate + TypeScript build
+      - name: Build
         run: pnpm build
-        working-directory: backend
         env:
           DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
 
@@ -222,7 +200,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: backend-dist-${{ needs.resolve-env.outputs.environment }}
-          path: backend/dist/
+          path: |
+            dist/
+            package.json
+            pnpm-lock.yaml
           retention-days: 5
 
   # ── Deploy to DigitalOcean via SSH ────────────────────────
@@ -232,14 +213,11 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.event_name == 'release'
     environment: ${{ needs.resolve-env.outputs.environment }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Download build artifact
         uses: actions/download-artifact@v4
         with:
           name: backend-dist-${{ needs.resolve-env.outputs.environment }}
-          path: backend/dist/
+          path: artifact/
 
       - name: Configure SSH for DigitalOcean
         shell: bash
@@ -247,42 +225,81 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' '${{ secrets.DO_SSH_KEY }}' > ~/.ssh/digitalocean
           chmod 600 ~/.ssh/digitalocean
-          ssh-keyscan -p "${{ secrets.DO_PORT }}" "${{ secrets.DO_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -p "${{ needs.resolve-env.outputs.do_port }}" "${{ needs.resolve-env.outputs.do_host }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Backup current version on server
+        shell: bash
+        run: |
+          ssh -i ~/.ssh/digitalocean \
+            -p "${{ needs.resolve-env.outputs.do_port }}" \
+            "${{ needs.resolve-env.outputs.do_user }}@${{ needs.resolve-env.outputs.do_host }}" \
+            'set -e
+            cd ~/app/backend
+
+            if [ -d dist ]; then
+              rm -rf dist.backup
+              mv dist dist.backup
+              echo "Backed up current dist to dist.backup"
+            fi
+
+            mkdir -p dist'
 
       - name: Upload backend to DigitalOcean
         shell: bash
         run: |
+          ssh -i ~/.ssh/digitalocean \
+            -p "${{ needs.resolve-env.outputs.do_port }}" \
+            "${{ needs.resolve-env.outputs.do_user }}@${{ needs.resolve-env.outputs.do_host }}" \
+            "mkdir -p ~/app/backend"
+
           rsync -az --delete \
             --exclude='node_modules' \
             --exclude='.env' \
             --exclude='.git' \
-            -e "ssh -i ~/.ssh/digitalocean -p ${{ secrets.DO_PORT }}" \
-            backend/dist/ \
-            ${{ secrets.DO_USER }}@${{ secrets.DO_HOST }}:~/app/backend/dist/
+            -e "ssh -i ~/.ssh/digitalocean -p ${{ needs.resolve-env.outputs.do_port }}" \
+            artifact/dist/ \
+            "${{ needs.resolve-env.outputs.do_user }}@${{ needs.resolve-env.outputs.do_host }}:~/app/backend/dist/"
 
-      - name: Install pnpm, production deps and restart on droplet
+          scp -i ~/.ssh/digitalocean \
+            -P "${{ needs.resolve-env.outputs.do_port }}" \
+            artifact/package.json \
+            artifact/pnpm-lock.yaml \
+            "${{ needs.resolve-env.outputs.do_user }}@${{ needs.resolve-env.outputs.do_host }}:~/app/backend/"
+
+      - name: Install production dependencies and restart
         shell: bash
         run: |
-          ssh -i ~/.ssh/digitalocean -p "${{ secrets.DO_PORT }}" \
-            "${{ secrets.DO_USER }}@${{ secrets.DO_HOST }}" \
-            "cd ~/app/backend && \
-             corepack enable && \
-             corepack prepare pnpm@9 --activate && \
-             pnpm install --frozen-lockfile --prod && \
-             pm2 restart backend --update-env || \
-             pm2 start dist/index.js --name backend --update-env && \
-             pm2 save"
+          ssh -i ~/.ssh/digitalocean \
+            -p "${{ needs.resolve-env.outputs.do_port }}" \
+            "${{ needs.resolve-env.outputs.do_user }}@${{ needs.resolve-env.outputs.do_host }}" \
+            'set -e
+            cd ~/app/backend
+
+            corepack enable
+            corepack prepare pnpm@9 --activate
+
+            pnpm install --frozen-lockfile --prod
+
+            if pm2 describe backend >/dev/null 2>&1; then
+              pm2 restart backend --update-env
+            else
+              pm2 start dist/index.js --name backend --update-env
+            fi
+
+            pm2 save'
 
       - name: Verify deployment
         shell: bash
         run: |
-          for i in 1 2 3 4 5; do
+          for i in 1 2 3 4 5 6 7 8 9 10; do
             sleep 3
-            if curl -fsS "${{ secrets.BACKEND_URL }}/api/health"; then
-              echo "Backend healthy at ${{ secrets.BACKEND_URL }}"
+
+            if curl -fsS "${{ needs.resolve-env.outputs.backend_url }}/api/health"; then
+              echo "Backend healthy"
               exit 0
             fi
           done
+
           echo "Backend health check failed"
           exit 1
 
@@ -293,15 +310,55 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ needs.resolve-env.outputs.environment }}
     steps:
+      - name: Configure SSH for DigitalOcean
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' '${{ secrets.DO_SSH_KEY }}' > ~/.ssh/digitalocean
+          chmod 600 ~/.ssh/digitalocean
+          ssh-keyscan -p "${{ needs.resolve-env.outputs.do_port }}" "${{ needs.resolve-env.outputs.do_host }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
       - name: Rollback to previous version
         shell: bash
         run: |
-          ssh -i ~/.ssh/digitalocean -p "${{ secrets.DO_PORT }}" \
-            "${{ secrets.DO_USER }}@${{ secrets.DO_HOST }}" \
-            "cd ~/app/backend && \
-             pm2 deploy rollback production || \
-             pm2 restart backend --update-env"
-          echo "Rolled back to previous version on ${{ secrets.DO_HOST }}"
+          ssh -i ~/.ssh/digitalocean \
+            -p "${{ needs.resolve-env.outputs.do_port }}" \
+            "${{ needs.resolve-env.outputs.do_user }}@${{ needs.resolve-env.outputs.do_host }}" \
+            'set -e
+            cd ~/app/backend
+
+            if [ -d dist.backup ]; then
+              rm -rf dist.current
+              mv dist dist.current
+              mv dist.backup dist
+
+              corepack enable
+              corepack prepare pnpm@9 --activate
+              pnpm install --frozen-lockfile --prod
+
+              pm2 restart backend --update-env
+              pm2 save
+
+              echo "Rolled back to previous version"
+            else
+              echo "No backup found, cannot rollback"
+              exit 1
+            fi'
+
+      - name: Verify rollback
+        shell: bash
+        run: |
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            sleep 3
+
+            if curl -fsS "${{ needs.resolve-env.outputs.backend_url }}/api/health"; then
+              echo "Backend healthy after rollback"
+              exit 0
+            fi
+          done
+
+          echo "Backend health check failed after rollback"
+          exit 1
 
   # ── Summary ───────────────────────────────────────────────
   summary:
@@ -316,8 +373,8 @@ jobs:
           echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Environment | ${{ needs.resolve-env.outputs.environment }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Host | ${{ secrets.DO_HOST }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Backend URL | ${{ secrets.BACKEND_URL }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Host | ${{ needs.resolve-env.outputs.do_host }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Backend URL | ${{ needs.resolve-env.outputs.backend_url }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Test | ${{ needs.test.result }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Lint | ${{ needs.lint.result }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build | ${{ needs.build.result }} |" >> "$GITHUB_STEP_SUMMARY"
