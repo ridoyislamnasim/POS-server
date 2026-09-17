@@ -48,54 +48,66 @@ jobs:
 
       - name: Resolve environment
         id: env
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            ENV="${{ github.event.inputs.environment }}"
-          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            ENV="$INPUT_ENVIRONMENT"
+          elif [ "$EVENT_NAME" = "release" ]; then
             ENV="production"
-          elif [ "${{ github.ref }}" = "refs/heads/develop" ]; then
+          elif [ "$REF" = "refs/heads/main" ]; then
+            ENV="production"
+          elif [ "$REF" = "refs/heads/develop" ]; then
             ENV="staging"
           else
             ENV="staging"
           fi
-          echo "value=$ENV" >> "$GITHUB_OUTPUT"
-          echo "environment=$ENV" >> "$GITHUB_OUTPUT"
 
-          case "$ENV" in
-            production)
-              echo "do_host=${{ secrets.DO_HOST }}" >> "$GITHUB_OUTPUT"
-              echo "do_port=22" >> "$GITHUB_OUTPUT"
-              echo "do_user=${{ secrets.DO_USER }}" >> "$GITHUB_OUTPUT"
-              echo "backend_url=${{ secrets.BACKEND_URL }}" >> "$GITHUB_OUTPUT"
-              echo "web_origin=http://localhost:3020,https://shohojhisab.com,https://mobile.shohojhisab.com" >> "$GITHUB_OUTPUT"
-              ;;
-            staging)
-              echo "do_host=${{ secrets.DO_HOST_STAGING }}" >> "$GITHUB_OUTPUT"
-              echo "do_port=22" >> "$GITHUB_OUTPUT"
-              echo "do_user=${{ secrets.DO_USER }}" >> "$GITHUB_OUTPUT"
-              echo "backend_url=${{ secrets.BACKEND_URL_STAGING }}" >> "$GITHUB_OUTPUT"
-              echo "web_origin=http://localhost:3020" >> "$GITHUB_OUTPUT"
-              ;;
-          esac
+          echo "value=$ENV" >> "$GITHUB_OUTPUT"
+
+          if [ "$ENV" = "production" ]; then
+            echo "do_host=${{ secrets.DO_HOST }}" >> "$GITHUB_OUTPUT"
+            echo "do_port=22" >> "$GITHUB_OUTPUT"
+            echo "do_user=${{ secrets.DO_USER }}" >> "$GITHUB_OUTPUT"
+            echo "backend_url=${{ secrets.BACKEND_URL }}" >> "$GITHUB_OUTPUT"
+            echo "web_origin=http://localhost:3020,https://shohojhisab.com,https://mobile.shohojhisab.com" >> "$GITHUB_OUTPUT"
+          else
+            echo "do_host=${{ secrets.DO_HOST_STAGING }}" >> "$GITHUB_OUTPUT"
+            echo "do_port=22" >> "$GITHUB_OUTPUT"
+            echo "do_user=${{ secrets.DO_USER }}" >> "$GITHUB_OUTPUT"
+            echo "backend_url=${{ secrets.BACKEND_URL_STAGING }}" >> "$GITHUB_OUTPUT"
+            echo "web_origin=http://localhost:3020" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Debug resolved environment
         run: |
           echo "Environment: ${{ steps.env.outputs.value }}"
-          echo "Host: ${{ steps.env.outputs.do_host }}"
+          echo "Host configured: ${{ steps.env.outputs.do_host != '' }}"
           echo "Port: ${{ steps.env.outputs.do_port }}"
-          echo "User: ${{ steps.env.outputs.do_user }}"
-          echo "Backend URL: ${{ steps.env.outputs.backend_url }}"
+          echo "User configured: ${{ steps.env.outputs.do_user != '' }}"
+          echo "Backend URL configured: ${{ steps.env.outputs.backend_url != '' }}"
 
       - name: Validate required secrets
+        env:
+          DO_HOST: ${{ steps.env.outputs.do_host }}
+          DO_USER: ${{ steps.env.outputs.do_user }}
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
         run: |
-          if [ -z "${{ steps.env.outputs.do_host }}" ]; then
-            echo "::error::DO_HOST secret is not set"
+          if [ -z "$DO_HOST" ]; then
+            echo "::error::DO_HOST is empty. Add it to Repository Secrets (not Environment Secrets)."
             exit 1
           fi
-          if [ -z "${{ steps.env.outputs.do_user }}" ]; then
-            echo "::error::DO_USER secret is not set"
+          if [ -z "$DO_USER" ]; then
+            echo "::error::DO_USER is empty. Add it to Repository Secrets."
             exit 1
           fi
+          if [ -z "$DO_SSH_KEY" ]; then
+            echo "::error::DO_SSH_KEY is empty. Add it to Repository Secrets."
+            exit 1
+          fi
+          echo "Required secrets are configured."
 
   # ── Test ──────────────────────────────────────────────────
   test:
@@ -353,7 +365,7 @@ jobs:
   # ── Rollback ──────────────────────────────────────────────
   rollback:
     needs: [resolve-env]
-    if: github.event.inputs.force_rollback == true
+    if: github.event_name == 'workflow_dispatch' && inputs.force_rollback == true
     runs-on: ubuntu-latest
     environment: ${{ needs.resolve-env.outputs.environment }}
     steps:
