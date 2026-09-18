@@ -367,6 +367,12 @@ jobs:
           set -e
           cd ~/pos/POS-server
 
+          echo "--- tools ---"
+          command -v curl || echo "NO_CURL"
+          command -v ss || echo "NO_SS"
+          command -v node
+          node --version || echo "node version unknown"
+
           echo "--- dist on disk ---"
           ls -la dist/app.js dist/index.js
           if grep -q 'api/version' dist/app.js; then
@@ -376,20 +382,34 @@ jobs:
             exit 1
           fi
 
+          echo "--- pm2 process ---"
+          pm2 describe backend || true
+
+          echo "--- app port (server .env, fallback 4000) ---"
+          PORT_CAND="$(grep -E '^PORT=' .env 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d ' \r"' || true)"
+          [ -n "$PORT_CAND" ] || PORT_CAND="4000"
+          echo "PORT_CAND=$PORT_CAND"
+
+          echo "--- listeners ---"
+          ss -ltn 2>/dev/null || echo "ss unavailable"
+
           echo "--- direct-to-process check (bypasses any proxy) ---"
-          PORTS="$(ss -ltn 2>/dev/null | awk 'NR>1{n=split($4,a,":"); if (n>0) print a[n]}' | sort -u || true)"
-          [ -n "$PORTS" ] || PORTS="4000"
+          CANDS="$PORT_CAND"
+          if [ "$PORT_CAND" != "4000" ]; then CANDS="$CANDS 4000"; fi
           HIT=""
-          for P in $PORTS; do
-            case "$P" in ''|*[!0-9]*) continue;; esac
-            V="$(curl -fsS --max-time 5 "http://127.0.0.1:$P/api/version" 2>/dev/null | grep -o '"version":"[^"]*"' | cut -d'"' -f4 || true)"
-            if [ -n "$V" ]; then
-              echo "127.0.0.1:$P -> version $V"
-              if [ "$V" = "$EXPECTED_SHA" ]; then HIT="$P"; fi
-            fi
+          SEEN=""
+          for P in $CANDS; do
+            F="$(mktemp)"
+            HTTP="$(curl -sS --max-time 10 -o "$F" -w '%{http_code}' "http://127.0.0.1:$P/api/version" || true)"
+            BODY="$(cat "$F" 2>/dev/null || echo '<empty>')"
+            rm -f "$F"
+            V="$(printf '%s' "$BODY" | grep -o '"version":"[^"]*"' | cut -d'"' -f4 || true)"
+            echo "127.0.0.1:$P -> http=$HTTP version=${V:-<none>}"
+            if [ -n "$V" ] && [ -z "$SEEN" ]; then SEEN="$P:$HTTP:$V"; fi
+            if [ "$V" = "$EXPECTED_SHA" ]; then HIT="$P"; fi
           done
           if [ -z "$HIT" ]; then
-            echo "::error::No local process serves $EXPECTED_SHA — pm2 runs a stale dist or a different directory"
+            echo "::error::No local process serves $EXPECTED_SHA (closest: ${SEEN:-nothing listening}) — pm2 runs a stale dist, a different directory/port, or the process is down"
             exit 1
           fi
           echo "Live process on 127.0.0.1:$HIT serves the deployed commit"
