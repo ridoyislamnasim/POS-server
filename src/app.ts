@@ -11,6 +11,7 @@ import { csrfProtect } from "./middleware/csrf.js";
 import { errorMiddleware, notFoundMiddleware } from "./middleware/error.middleware.js";
 import { registerRoutes } from "./app/routes.js";
 import { env } from "./config/env.js";
+import { BUILD_SHA, BUILD_TIME } from "./generated/build-info.js";
 
 const originAllowlist = env.allowedFrontendOrigins;
 
@@ -31,6 +32,9 @@ export function createApp() {
   app.use("/uploads", express.static(uploadRoot, { index: false, dotfiles: "deny" }));
 
   app.get("/api/health", (_req, res) => ok(res, { status: "ok" }));
+  // Public build fingerprint — proves which commit is actually live.
+  // Used by the deploy workflow to fail loudly on stale pm2 processes.
+  app.get("/api/version", (_req, res) => ok(res, { version: BUILD_SHA, builtAt: BUILD_TIME }));
   app.get("/api/ready", async (_req, res) => {
     try {
       await prisma.$queryRaw`SELECT 1`;

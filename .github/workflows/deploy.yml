@@ -191,6 +191,12 @@ jobs:
         env:
           DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
 
+      - name: Bake build info
+        run: |
+          mkdir -p src/generated
+          printf 'export const BUILD_SHA = "%s";\nexport const BUILD_TIME = "%s";\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > src/generated/build-info.ts
+          cat src/generated/build-info.ts
+
       - name: Build
         run: pnpm build
         env:
@@ -340,21 +346,34 @@ jobs:
             fi
 
             pm2 save
+
+            echo "--- live process diagnostics ---"
+            echo "deploy dir: $(pwd)"
+            git rev-parse --short HEAD 2>/dev/null || echo "no git repo"
+            pm2 describe backend 2>/dev/null | grep -iE "script path|exec cwd|status" || true
           '
 
       - name: Verify deployment
         shell: bash
         env:
           BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          EXPECTED_SHA: ${{ github.sha }}
         run: |
           for i in 1 2 3 4 5 6 7 8 9 10; do
             sleep 3
             if curl -fsS "$BACKEND_URL/api/health"; then
               echo "Backend healthy"
-              exit 0
+              LIVE="$(curl -fsS "$BACKEND_URL/api/version" | grep -o '"version":"[^"]*"' | cut -d'"' -f4 || true)"
+              echo "Live version: $LIVE (expected $EXPECTED_SHA)"
+              if [ -n "$LIVE" ] && [ "$LIVE" = "$EXPECTED_SHA" ]; then
+                echo "Deployed version verified live"
+                exit 0
+              fi
+              echo "Waiting for the new version to go live..."
             fi
           done
-          echo "Backend health check failed"
+          echo "Deployment verification failed: live version does not match $EXPECTED_SHA"
+          echo "The pm2 process is likely serving stale code — check the diagnostics above (script path / git SHA)."
           exit 1
 
   # ── Rollback ──────────────────────────────────────────────
