@@ -37,10 +37,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       environment: ${{ steps.env.outputs.value }}
-      do_host: ${{ steps.env.outputs.do_host }}
-      do_port: ${{ steps.env.outputs.do_port }}
-      do_user: ${{ steps.env.outputs.do_user }}
-      backend_url: ${{ steps.env.outputs.backend_url }}
       web_origin: ${{ steps.env.outputs.web_origin }}
     steps:
       - name: Checkout
@@ -68,46 +64,14 @@ jobs:
           echo "value=$ENV" >> "$GITHUB_OUTPUT"
 
           if [ "$ENV" = "production" ]; then
-            echo "do_host=${{ secrets.DO_HOST }}" >> "$GITHUB_OUTPUT"
-            echo "do_port=22" >> "$GITHUB_OUTPUT"
-            echo "do_user=${{ secrets.DO_USER }}" >> "$GITHUB_OUTPUT"
-            echo "backend_url=${{ secrets.BACKEND_URL }}" >> "$GITHUB_OUTPUT"
             echo "web_origin=http://localhost:3020,https://shohojhisab.com,https://mobile.shohojhisab.com" >> "$GITHUB_OUTPUT"
           else
-            echo "do_host=${{ secrets.DO_HOST_STAGING }}" >> "$GITHUB_OUTPUT"
-            echo "do_port=22" >> "$GITHUB_OUTPUT"
-            echo "do_user=${{ secrets.DO_USER }}" >> "$GITHUB_OUTPUT"
-            echo "backend_url=${{ secrets.BACKEND_URL_STAGING }}" >> "$GITHUB_OUTPUT"
             echo "web_origin=http://localhost:3020" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Debug resolved environment
         run: |
           echo "Environment: ${{ steps.env.outputs.value }}"
-          echo "Host configured: ${{ steps.env.outputs.do_host != '' }}"
-          echo "Port: ${{ steps.env.outputs.do_port }}"
-          echo "User configured: ${{ steps.env.outputs.do_user != '' }}"
-          echo "Backend URL configured: ${{ steps.env.outputs.backend_url != '' }}"
-
-      - name: Validate required secrets
-        env:
-          DO_HOST: ${{ steps.env.outputs.do_host }}
-          DO_USER: ${{ steps.env.outputs.do_user }}
-          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
-        run: |
-          if [ -z "$DO_HOST" ]; then
-            echo "::error::DO_HOST is empty. Add it to Repository Secrets (not Environment Secrets)."
-            exit 1
-          fi
-          if [ -z "$DO_USER" ]; then
-            echo "::error::DO_USER is empty. Add it to Repository Secrets."
-            exit 1
-          fi
-          if [ -z "$DO_SSH_KEY" ]; then
-            echo "::error::DO_SSH_KEY is empty. Add it to Repository Secrets."
-            exit 1
-          fi
-          echo "Required secrets are configured."
 
   # ── Test ──────────────────────────────────────────────────
   test:
@@ -265,9 +229,9 @@ jobs:
       - name: Configure SSH for DigitalOcean
         shell: bash
         env:
-          DO_HOST: ${{ needs.resolve-env.outputs.do_host }}
-          DO_PORT: ${{ needs.resolve-env.outputs.do_port }}
-          DO_USER: ${{ needs.resolve-env.outputs.do_user }}
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_PORT: "22"
+          DO_USER: ${{ secrets.DO_USER }}
           DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
         run: |
           test -n "$DO_HOST"  || { echo "::error::DO_HOST is empty"; exit 1; }
@@ -285,9 +249,9 @@ jobs:
       - name: Backup current version on server
         shell: bash
         env:
-          DO_HOST: ${{ needs.resolve-env.outputs.do_host }}
-          DO_PORT: ${{ needs.resolve-env.outputs.do_port }}
-          DO_USER: ${{ needs.resolve-env.outputs.do_user }}
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_PORT: "22"
+          DO_USER: ${{ secrets.DO_USER }}
         run: |
           ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" '
             set -e
@@ -303,9 +267,9 @@ jobs:
       - name: Upload backend to DigitalOcean
         shell: bash
         env:
-          DO_HOST: ${{ needs.resolve-env.outputs.do_host }}
-          DO_PORT: ${{ needs.resolve-env.outputs.do_port }}
-          DO_USER: ${{ needs.resolve-env.outputs.do_user }}
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_PORT: "22"
+          DO_USER: ${{ secrets.DO_USER }}
         run: |
           ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" "mkdir -p ~/app/backend"
 
@@ -325,9 +289,9 @@ jobs:
       - name: Install production dependencies and restart
         shell: bash
         env:
-          DO_HOST: ${{ needs.resolve-env.outputs.do_host }}
-          DO_PORT: ${{ needs.resolve-env.outputs.do_port }}
-          DO_USER: ${{ needs.resolve-env.outputs.do_user }}
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_PORT: "22"
+          DO_USER: ${{ secrets.DO_USER }}
         run: |
           ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" '
             set -e
@@ -350,7 +314,7 @@ jobs:
       - name: Verify deployment
         shell: bash
         env:
-          BACKEND_URL: ${{ needs.resolve-env.outputs.backend_url }}
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
         run: |
           for i in 1 2 3 4 5 6 7 8 9 10; do
             sleep 3
@@ -372,9 +336,9 @@ jobs:
       - name: Configure SSH for DigitalOcean
         shell: bash
         env:
-          DO_HOST: ${{ needs.resolve-env.outputs.do_host }}
-          DO_PORT: ${{ needs.resolve-env.outputs.do_port }}
-          DO_USER: ${{ needs.resolve-env.outputs.do_user }}
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_PORT: "22"
+          DO_USER: ${{ secrets.DO_USER }}
           DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
         run: |
           test -n "$DO_HOST"  || { echo "::error::DO_HOST is empty"; exit 1; }
@@ -391,9 +355,9 @@ jobs:
       - name: Rollback to previous version
         shell: bash
         env:
-          DO_HOST: ${{ needs.resolve-env.outputs.do_host }}
-          DO_PORT: ${{ needs.resolve-env.outputs.do_port }}
-          DO_USER: ${{ needs.resolve-env.outputs.do_user }}
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_PORT: "22"
+          DO_USER: ${{ secrets.DO_USER }}
         run: |
           ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" '
             set -e
@@ -421,7 +385,7 @@ jobs:
       - name: Verify rollback
         shell: bash
         env:
-          BACKEND_URL: ${{ needs.resolve-env.outputs.backend_url }}
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
         run: |
           for i in 1 2 3 4 5 6 7 8 9 10; do
             sleep 3
@@ -446,8 +410,10 @@ jobs:
           echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Environment | ${{ needs.resolve-env.outputs.environment }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Host configured | ${{ needs.resolve-env.outputs.do_host != '' }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Backend URL configured | ${{ needs.resolve-env.outputs.backend_url != '' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| DO_HOST configured | ${{ secrets.DO_HOST != '' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| DO_USER configured | ${{ secrets.DO_USER != '' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| DO_SSH_KEY configured | ${{ secrets.DO_SSH_KEY != '' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| BACKEND_URL configured | ${{ secrets.BACKEND_URL != '' }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Test | ${{ needs.test.result }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Lint | ${{ needs.lint.result }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build | ${{ needs.build.result }} |" >> "$GITHUB_STEP_SUMMARY"
@@ -458,10 +424,10 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Secret | Configured |" >> "$GITHUB_STEP_SUMMARY"
           echo "|--------|------------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| DO_HOST | ${{ needs.resolve-env.outputs.do_host != '' }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| DO_USER | ${{ needs.resolve-env.outputs.do_user != '' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| DO_HOST | ${{ secrets.DO_HOST != '' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| DO_USER | ${{ secrets.DO_USER != '' }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| DO_SSH_KEY | ${{ secrets.DO_SSH_KEY != '' }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| BACKEND_URL | ${{ needs.resolve-env.outputs.backend_url != '' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| BACKEND_URL | ${{ secrets.BACKEND_URL != '' }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| JWT_SECRET | ${{ secrets.JWT_SECRET != '' }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| JWT_REFRESH_SECRET | ${{ secrets.JWT_REFRESH_SECRET != '' }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| PLATFORM_BOOTSTRAP_TOKEN | ${{ secrets.PLATFORM_BOOTSTRAP_TOKEN != '' }} |" >> "$GITHUB_STEP_SUMMARY"
