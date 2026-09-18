@@ -13,7 +13,6 @@ function stripPassword<T extends { passwordHash?: unknown }>(user: T): Omit<T, "
   return safe;
 }
 
-/** Tenant owners always get a tenant-scoped role holding every permission. */
 async function ensureTenantOwnerRole(tenantId: string) {
   const existing = await usersRepository.findTenantOwnerRole(tenantId);
   if (existing) return existing;
@@ -29,7 +28,6 @@ async function resolveAssignableRole(tenantId: string, roleKey: string) {
   return usersRepository.resolveScopedRole(tenantId, roleKey);
 }
 
-/** Shop tenant for this user. Tenant staff never resolve platform-only memberships. */
 async function shopTenantIdForUser(ctx: RequestContext, userId: string): Promise<string | null> {
   if (ctx.isPlatform) {
     const shop = await usersRepository.shopTenantForUser(userId);
@@ -43,7 +41,7 @@ async function shopTenantIdForUser(ctx: RequestContext, userId: string): Promise
 
 async function requireVisibleTenant(ctx: RequestContext, userId: string): Promise<string> {
   const user = await usersRepository.findVisibleUserId(ctx, userId);
-  if (!user) throw new AppError("NOT_FOUND", "User not in tenant", 404);
+  if (!user) throw new AppError("NOT_FOUND", "User not found", 404);
   const tenantId = await shopTenantIdForUser(ctx, userId);
   if (!tenantId) throw new AppError("NOT_FOUND", "User not in tenant", 404);
   return tenantId;
@@ -65,12 +63,6 @@ function assertRoleAssignable(ctx: RequestContext, roleKey: string | undefined, 
   }
 }
 
-/**
- * User-management business logic. No Express `req`/`res` here.
- * Tenant isolation follows the pre-refactor rules:
- * non-platform callers only ever see shop members of their own tenant,
- * never platform admins or other tenants.
- */
 export const usersService = {
   async list(ctx: RequestContext, query: Record<string, unknown>) {
     const list = parseListQuery(query, {
@@ -106,8 +98,7 @@ export const usersService = {
     if (roleKey === "TENANT_OWNER" && !tenantId) {
       throw new AppError("VALIDATION", "tenantId is required for a tenant owner", 400);
     }
-
-    const targetTenantId = tenantId && ctx.isPlatform ? String(tenantId) : ctx.tenantId!;
+    const targetTenantId = tenantId ? String(tenantId) : ctx.isPlatform ? null : ctx.tenantId!;
     const target = await usersRepository.findTenantById(targetTenantId);
     if (!target) throw new AppError("NOT_FOUND", "Tenant not found", 404);
 
@@ -145,14 +136,16 @@ export const usersService = {
   },
 
   async listRoles(ctx: RequestContext) {
-    const roles = await usersRepository.listRolesForTenant(ctx.tenantId!);
+    const roles = ctx.isPlatform
+      ? await usersRepository.listRolesForAllTenants()
+      : await usersRepository.listRolesForTenant(ctx.tenantId!);
     const visible = roles.filter(
       (r) => (r.key !== "PLATFORM_SUPER_ADMIN" && r.key !== "TENANT_OWNER") || ctx.isPlatform,
     );
     if (ctx.isPlatform && !visible.some((r) => r.key === "TENANT_OWNER")) {
       visible.push({
         id: "tenant-owner",
-        tenantId: ctx.tenantId!,
+        tenantId: null,
         key: "TENANT_OWNER",
         name: "Tenant owner",
       } as (typeof visible)[number]);
@@ -161,14 +154,14 @@ export const usersService = {
   },
 
   async getById(ctx: RequestContext, userId: string) {
-    const tenantId = await requireVisibleTenant(ctx, userId);
+    const tenantId = ctx.isPlatform ? (ctx.tenantId ?? "") : await requireVisibleTenant(ctx, userId);
     const user = await usersRepository.findUserDetail(ctx, userId, tenantId);
     if (!user) throw new AppError("NOT_FOUND", "User not found", 404);
     return stripPassword(user);
   },
 
   async update(ctx: RequestContext, userId: string, input: UpdateUserInput) {
-    const currentTenant = await requireVisibleTenant(ctx, userId);
+    const currentTenant = ctx.isPlatform ? (ctx.tenantId ?? "") : await requireVisibleTenant(ctx, userId);
     const { name, email, password, roleKey, branchIds, status, tenantId: moveTenantId } = input;
     assertRoleAssignable(ctx, roleKey, moveTenantId);
     if (status && status !== "ACTIVE" && status !== "DEACTIVATED") {
@@ -262,7 +255,7 @@ export const usersService = {
   },
 
   async deactivate(ctx: RequestContext, userId: string) {
-    const tenantId = await requireVisibleTenant(ctx, userId);
+    const tenantId = ctx.isPlatform ? (ctx.tenantId ?? "") : await requireVisibleTenant(ctx, userId);
     const user = await usersRepository.deactivateUser(userId);
     await usersRepository.audit({
       tenantId,

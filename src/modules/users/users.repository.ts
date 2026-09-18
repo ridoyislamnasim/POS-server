@@ -41,7 +41,8 @@ export const usersRepository = {
     });
   },
 
-  findTenantById(id: string) {
+findTenantById(id: string | null) {
+    if (!id) return null;
     return prisma.tenant.findUnique({ where: { id }, select: { id: true } });
   },
 
@@ -112,10 +113,14 @@ export const usersRepository = {
     });
   },
 
-  listRolesForTenant(tenantId: string) {
+listRolesForTenant(tenantId: string) {
     return prisma.role.findMany({
       where: { OR: [{ tenantId }, { tenantId: null }] },
     });
+  },
+
+  listRolesForAllTenants() {
+    return prisma.role.findMany({});
   },
 
   findUserDetail(ctx: RequestContext, userId: string, tenantId: string) {

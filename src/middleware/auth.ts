@@ -160,6 +160,6 @@ export function requirePermission(key: string) {
 
 export function requireTenant(req: Request, res: Response, next: NextFunction) {
   const ctx = (req as AuthedRequest).ctx;
-  if (!ctx?.tenantId) return fail(res, "FORBIDDEN", "Tenant required", 403);
+  if (!ctx?.tenantId && !isPlatformActor(ctx)) return fail(res, "FORBIDDEN", "Tenant required", 403);
   next();
 }
