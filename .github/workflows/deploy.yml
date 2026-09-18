@@ -202,6 +202,7 @@ jobs:
           name: backend-dist-${{ needs.resolve-env.outputs.environment }}
           path: |
             dist/
+            prisma/
             package.json
             pnpm-lock.yaml
           retention-days: 5
@@ -238,6 +239,25 @@ jobs:
           ssh-keyscan -p "$DO_PORT" "$DO_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
           echo "SSH configured: host=$DO_HOST user=$DO_USER port=$DO_PORT"
+
+      - name: Pull latest code on server
+        shell: bash
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_PORT: "22"
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" '
+            set -e
+            cd ~/pos/POS-server
+            if [ -d .git ]; then
+              git stash push -m "deploy-autostash" || true
+              git pull --ff-only
+              echo "Server code updated to $(git rev-parse --short HEAD) on $(git branch --show-current)"
+            else
+              echo "::warning::No git repo at ~/pos/POS-server, skipping code pull"
+            fi
+          '
 
       - name: Backup current version on server
         shell: bash
@@ -279,6 +299,10 @@ jobs:
             artifact/pnpm-lock.yaml \
             "$DO_USER@$DO_HOST:~/pos/POS-server/"
 
+          scp -r -i ~/.ssh/digitalocean -P "$DO_PORT" \
+            artifact/prisma \
+            "$DO_USER@$DO_HOST:~/pos/POS-server/"
+
       - name: Install production dependencies and restart
         shell: bash
         env:
@@ -294,6 +318,20 @@ jobs:
             corepack prepare pnpm@9 --activate
 
             pnpm install --frozen-lockfile --prod
+
+            echo "Applying pending database migrations..."
+            if [ -d prisma ]; then
+              if [ -x node_modules/.bin/prisma ]; then
+                ./node_modules/.bin/prisma migrate deploy
+              else
+                PRISMA_VERSION="$(node -p "require('./package.json').devDependencies.prisma.replace(/^[\^~>=< ]+/, '')")"
+                npx --yes "prisma@$PRISMA_VERSION" migrate deploy
+              fi
+              echo "Migrations up to date"
+            else
+              echo "::error::prisma/ directory not found, cannot apply migrations"
+              exit 1
+            fi
 
             if pm2 describe backend >/dev/null 2>&1; then
               pm2 restart backend --update-env
