@@ -78,13 +78,28 @@ describe("POST /api/v1/auth/login", () => {
   });
 
   describe("Normal tenant-scoped users", () => {
-    it("tenant owner login without tenantId returns 403 Tenant ID required", async () => {
+    it("tenant owner login without tenantId auto-resolves to their tenant", async () => {
+      const platformLogin = await request(app)
+        .post("/api/v1/auth/login")
+        .send({ email: PLATFORM_EMAIL, password: PLATFORM_PASS });
+      expect(platformLogin.status).toBe(200);
+
+      const meRes = await request(app)
+        .get("/api/v1/auth/me")
+        .set("Authorization", `Bearer ${platformLogin.body.data.accessToken}`);
+      expect(meRes.status).toBe(200);
+      const firstTenantId = meRes.body.data.tenants[0].id;
+
       const res = await request(app)
         .post("/api/v1/auth/login")
         .send({ email: OWNER_EMAIL, password: OWNER_PASS });
 
-      expect(res.status).toBe(403);
-      expect(res.body.error.message).toBe("Tenant ID required");
+      expect(res.status).toBe(200);
+      expect(res.body.data.user.isPlatform).toBe(false);
+      expect(res.body.data.user.tenant).toBeDefined();
+      expect(res.body.data.user.tenant.id).toBe(firstTenantId);
+      const payload = decodeJwt(res.body.data.accessToken);
+      expect(payload.tenantId).toBe(firstTenantId);
     });
 
     it("tenant owner login with valid tenantId succeeds", async () => {
@@ -126,13 +141,16 @@ describe("POST /api/v1/auth/login", () => {
       expect(res.body.error.message).toBe("Tenant ID required");
     });
 
-    it("cashier login without tenantId returns 403 Tenant ID required", async () => {
+    it("cashier login without tenantId auto-resolves to their tenant", async () => {
       const res = await request(app)
         .post("/api/v1/auth/login")
         .send({ email: CASHIER_EMAIL, password: CASHIER_PASS });
 
-      expect(res.status).toBe(403);
-      expect(res.body.error.message).toBe("Tenant ID required");
+      expect(res.status).toBe(200);
+      expect(res.body.data.user.isPlatform).toBe(false);
+      expect(res.body.data.user.tenant).toBeDefined();
+      const payload = decodeJwt(res.body.data.accessToken);
+      expect(payload.tenantId).toBe(res.body.data.user.tenant.id);
     });
   });
 
