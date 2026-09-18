@@ -34,7 +34,11 @@ export function createApp() {
   app.get("/api/health", (_req, res) => ok(res, { status: "ok" }));
   // Public build fingerprint — proves which commit is actually live.
   // Used by the deploy workflow to fail loudly on stale pm2 processes.
-  app.get("/api/version", (_req, res) => ok(res, { version: BUILD_SHA, builtAt: BUILD_TIME }));
+  // no-store: proxies must never cache this (a cached 404 would hide deploys).
+  app.get("/api/version", (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    return ok(res, { version: BUILD_SHA, builtAt: BUILD_TIME });
+  });
   app.get("/api/ready", async (_req, res) => {
     try {
       await prisma.$queryRaw`SELECT 1`;

@@ -353,6 +353,48 @@ jobs:
             pm2 describe backend 2>/dev/null | grep -iE "script path|exec cwd|status" || true
           '
 
+      - name: Verify live process on server
+        shell: bash
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_PORT: "22"
+          DO_USER: ${{ secrets.DO_USER }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          ssh -i ~/.ssh/digitalocean -p "$DO_PORT" \
+            "$DO_USER@$DO_HOST" \
+            "EXPECTED_SHA='$EXPECTED_SHA' bash -s" <<'REMOTE_EOF'
+          set -e
+          cd ~/pos/POS-server
+
+          echo "--- dist on disk ---"
+          ls -la dist/app.js dist/index.js
+          if grep -q 'api/version' dist/app.js; then
+            echo "dist contains the /api/version route"
+          else
+            echo "::error::dist/app.js has no /api/version route — the new build did not land in $(pwd)"
+            exit 1
+          fi
+
+          echo "--- direct-to-process check (bypasses any proxy) ---"
+          PORTS="$(ss -ltn 2>/dev/null | awk 'NR>1{n=split($4,a,":"); if (n>0) print a[n]}' | sort -u || true)"
+          [ -n "$PORTS" ] || PORTS="4000"
+          HIT=""
+          for P in $PORTS; do
+            case "$P" in ''|*[!0-9]*) continue;; esac
+            V="$(curl -fsS --max-time 5 "http://127.0.0.1:$P/api/version" 2>/dev/null | grep -o '"version":"[^"]*"' | cut -d'"' -f4 || true)"
+            if [ -n "$V" ]; then
+              echo "127.0.0.1:$P -> version $V"
+              if [ "$V" = "$EXPECTED_SHA" ]; then HIT="$P"; fi
+            fi
+          done
+          if [ -z "$HIT" ]; then
+            echo "::error::No local process serves $EXPECTED_SHA — pm2 runs a stale dist or a different directory"
+            exit 1
+          fi
+          echo "Live process on 127.0.0.1:$HIT serves the deployed commit"
+          REMOTE_EOF
+
       - name: Verify deployment
         shell: bash
         env:
@@ -373,7 +415,7 @@ jobs:
             fi
           done
           echo "Deployment verification failed: live version does not match $EXPECTED_SHA"
-          echo "The pm2 process is likely serving stale code — check the diagnostics above (script path / git SHA)."
+          echo "The on-server check above already proved the pm2 process state — if it passed, a proxy/CDN is caching or routing to the wrong upstream instead."
           exit 1
 
   # ── Rollback ──────────────────────────────────────────────
