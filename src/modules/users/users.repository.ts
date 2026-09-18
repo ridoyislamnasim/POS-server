@@ -16,7 +16,7 @@ export const usersRepository = {
     return prisma.role.findFirst({ where: { key: roleKey, tenantId: null } });
   },
 
-  async resolveScopedRole(tenantId: string, roleKey: string) {
+  async resolveScopedRole(tenantId: string | null, roleKey: string) {
     const tenantRole = await prisma.role.findFirst({ where: { key: roleKey, tenantId } });
     if (tenantRole) return tenantRole;
     return prisma.role.findFirst({ where: { key: roleKey, tenantId: null } });

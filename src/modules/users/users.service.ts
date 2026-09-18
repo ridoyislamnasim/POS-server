@@ -23,8 +23,8 @@ async function ensureTenantOwnerRole(tenantId: string) {
   );
 }
 
-async function resolveAssignableRole(tenantId: string, roleKey: string) {
-  if (roleKey === "TENANT_OWNER") return ensureTenantOwnerRole(tenantId);
+async function resolveAssignableRole(tenantId: string | null, roleKey: string) {
+  if (roleKey === "TENANT_OWNER") return ensureTenantOwnerRole(tenantId!);
   return usersRepository.resolveScopedRole(tenantId, roleKey);
 }
 
@@ -98,7 +98,10 @@ export const usersService = {
     if (roleKey === "TENANT_OWNER" && !tenantId) {
       throw new AppError("VALIDATION", "tenantId is required for a tenant owner", 400);
     }
-    const targetTenantId = tenantId ? String(tenantId) : ctx.isPlatform ? null : ctx.tenantId!;
+    if (ctx.isPlatform && !tenantId) {
+      throw new AppError("VALIDATION", "tenantId is required to create a user", 400);
+    }
+    const targetTenantId = tenantId ? String(tenantId) : ctx.tenantId!;
     const target = await usersRepository.findTenantById(targetTenantId);
     if (!target) throw new AppError("NOT_FOUND", "Tenant not found", 404);
 
