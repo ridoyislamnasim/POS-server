@@ -48,7 +48,7 @@ export const authService = {
         throw new AppError("FORBIDDEN", "No tenant access", 403);
       }
     } else {
-      const resolvedTenantId = user.tenants[0]?.tenantId ?? null;
+      const resolvedTenantId = input.tenantId ?? user.tenants[0]?.tenantId ?? null;
       if (!resolvedTenantId) {
         throw new AppError("FORBIDDEN", "Tenant ID required", 403);
       }
