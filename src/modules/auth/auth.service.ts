@@ -37,13 +37,27 @@ export const authService = {
       throw new AppError("UNAUTHORIZED", "Invalid email or password", 401);
     }
 
-    const membership = input.tenantId
-      ? user.tenants.find((t) => t.tenantId === input.tenantId)
-      : user.tenants[0];
-    if (!membership) throw new AppError("FORBIDDEN", "No tenant access", 403);
+    const isPlatformUser = user.roles.some((r) => r.role.key === "PLATFORM_SUPER_ADMIN");
+
+    let membership: (typeof user.tenants)[number] | null;
+    if (isPlatformUser) {
+      membership = input.tenantId
+        ? (user.tenants.find((t) => t.tenantId === input.tenantId) ?? null)
+        : null;
+      if (input.tenantId && !membership) {
+        throw new AppError("FORBIDDEN", "No tenant access", 403);
+      }
+    } else {
+      membership = input.tenantId
+        ? (user.tenants.find((t) => t.tenantId === input.tenantId) ?? null)
+        : (user.tenants[0] ?? null);
+      if (!membership) throw new AppError("FORBIDDEN", "No tenant access", 403);
+    }
+
+    const tenantId = membership?.tenantId ?? null;
 
     const session = await authRepository.createPendingSession(user.id, meta.userAgent, meta.ip);
-    const access = signAccess({ sub: user.id, tenantId: membership.tenantId, sid: session.id });
+    const access = signAccess({ sub: user.id, tenantId, sid: session.id });
     const refresh = signRefresh({ sub: user.id, sid: session.id });
     await authRepository.storeRefreshHash(
       session.id,
@@ -52,7 +66,7 @@ export const authService = {
     const csrf = randomBytes(24).toString("hex");
 
     await writeAudit({
-      tenantId: membership.tenantId,
+      tenantId,
       userId: user.id,
       actorUserId: user.id,
       action: "login",
@@ -72,10 +86,10 @@ export const authService = {
         email: user.email,
         locale: user.locale,
         roles: user.roles.map((r) => r.role.key),
-        tenant: membership.tenant,
+        tenant: membership?.tenant ?? null,
         branches: user.branches.map((b) => b.branch),
-        allBranches: membership.allBranches,
-        isPlatform: membership.isPlatform,
+        allBranches: membership?.allBranches ?? false,
+        isPlatform: isPlatformUser,
       },
     };
   },
