@@ -21,7 +21,12 @@ const sendWindow = new Map<string, number[]>();
 
 export function visibleNotificationWhere(ctx: RequestContext): Prisma.NotificationLogWhereInput {
   const tenantId = ctx.tenantId;
-  if (!tenantId) return { id: "__none__" };
+  // Tenant users always need their tenant context. A platform super admin
+  // (role resolved from the database into ctx.isPlatform) works without any
+  // tenant and sees notifications addressed to them across tenants —
+  // NotificationLog rows are always tenant-bound, so this is the platform
+  // equivalent of the tenant scope. Recipient + branch scoping still apply.
+  if (!tenantId && !ctx.isPlatform) return { id: "__none__" };
   const branchFilter: Prisma.NotificationLogWhereInput =
     ctx.allBranches || ctx.isPlatform
       ? {}
@@ -29,7 +34,7 @@ export function visibleNotificationWhere(ctx: RequestContext): Prisma.Notificati
           OR: [{ branchId: null }, { branchId: { in: ctx.branchIds } }],
         };
   return {
-    tenantId,
+    ...(tenantId ? { tenantId } : {}),
     AND: [
       {
         OR: [

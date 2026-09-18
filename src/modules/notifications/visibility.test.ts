@@ -34,4 +34,21 @@ describe("visibleNotificationWhere", () => {
     const where = visibleNotificationWhere(ctx({ tenantId: null }));
     expect(where).toEqual({ id: "__none__" });
   });
+
+  it("lets PLATFORM_SUPER_ADMIN through without a tenant (cross-tenant, recipient-scoped)", () => {
+    const where = visibleNotificationWhere(
+      ctx({ tenantId: null, isPlatform: true, roles: ["PLATFORM_SUPER_ADMIN"] }),
+    );
+    expect(where).not.toEqual({ id: "__none__" });
+    expect("tenantId" in where).toBe(false);
+    expect(JSON.stringify(where)).toContain("user-1");
+    expect(JSON.stringify(where)).toContain("PLATFORM_SUPER_ADMIN");
+  });
+
+  it("keeps the tenant scope for PLATFORM_SUPER_ADMIN with a tenant context", () => {
+    const where = visibleNotificationWhere(
+      ctx({ tenantId: "tenant-a", isPlatform: true, roles: ["PLATFORM_SUPER_ADMIN"] }),
+    );
+    expect(where.tenantId).toBe("tenant-a");
+  });
 });

@@ -19,7 +19,7 @@ export const authController = {
         },
         { ip: req.ip, userAgent: req.headers["user-agent"] },
       );
-      setAuthCookies(res, result.access, result.refresh, result.csrf);
+      setAuthCookies(res, result.access, result.refresh, result.csrf, req.hostname);
       return ok(res, { accessToken: result.access, user: result.user });
     } catch (e) {
       return next(e);
@@ -33,7 +33,7 @@ export const authController = {
         ip: req.ip,
         userAgent: req.headers["user-agent"],
       });
-      clearAuthCookies(res);
+      clearAuthCookies(res, req.hostname);
       return ok(res, result);
     } catch (e) {
       return next(e);
