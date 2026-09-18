@@ -12,4 +12,11 @@ export const env = {
     .map((s) => s.trim())
     .filter(Boolean),
   isProduction: process.env.NODE_ENV === "production",
+  /**
+   * Shared cookie domain (e.g. "shohojhisab.com").
+   * Lets the apex + subdomains share auth cookies so browser JS on the
+   * frontend origin can read the CSRF cookie set by the API origin.
+   * Leave empty for localhost (host-only cookies).
+   */
+  cookieDomain: (process.env.COOKIE_DOMAIN ?? "").trim() || undefined,
 } as const;
