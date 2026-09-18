@@ -255,7 +255,7 @@ jobs:
         run: |
           ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" '
             set -e
-            cd ~/app/backend
+            cd ~/pos/POS-server
             if [ -d dist ]; then
               rm -rf dist.backup
               mv dist dist.backup
@@ -271,7 +271,7 @@ jobs:
           DO_PORT: "22"
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" "mkdir -p ~/app/backend"
+          ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" "mkdir -p ~/pos/POS-server"
 
           rsync -az --delete \
             --exclude='node_modules' \
@@ -279,12 +279,12 @@ jobs:
             --exclude='.git' \
             -e "ssh -i ~/.ssh/digitalocean -p $DO_PORT" \
             artifact/dist/ \
-            "$DO_USER@$DO_HOST:~/app/backend/dist/"
+            "$DO_USER@$DO_HOST:~/pos/POS-server/dist/"
 
           scp -i ~/.ssh/digitalocean -P "$DO_PORT" \
             artifact/package.json \
             artifact/pnpm-lock.yaml \
-            "$DO_USER@$DO_HOST:~/app/backend/"
+            "$DO_USER@$DO_HOST:~/pos/POS-server/"
 
       - name: Install production dependencies and restart
         shell: bash
@@ -295,7 +295,7 @@ jobs:
         run: |
           ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" '
             set -e
-            cd ~/app/backend
+            cd ~/pos/POS-server
 
             corepack enable
             corepack prepare pnpm@9 --activate
@@ -361,7 +361,7 @@ jobs:
         run: |
           ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" '
             set -e
-            cd ~/app/backend
+            cd ~/pos/POS-server
 
             if [ -d dist.backup ]; then
               rm -rf dist.current
