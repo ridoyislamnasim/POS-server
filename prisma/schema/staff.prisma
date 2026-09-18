@@ -4,7 +4,7 @@ model Attendance {
   id        String           @id @default(cuid())
   tenantId  String
   userId    String
-  user      User             @relation(fields: [userId], references: [id])
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   branchId  String
   branch    Branch           @relation(fields: [branchId], references: [id])
   status    AttendanceStatus @default(PRESENT)

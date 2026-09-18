@@ -128,13 +128,6 @@ jobs:
         env:
           DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
 
-      - name: Seed database
-        run: pnpm db:seed
-        env:
-          DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
-          JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
-
       - name: Type check
         run: npx tsc --noEmit
 

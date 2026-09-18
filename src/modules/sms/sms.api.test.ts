@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import request from "supertest";
+import { prisma } from "../../lib/prisma.js";
 import { createApp } from "../../app.js";
 
 const app = createApp();
 
 async function login(email: string, password: string) {
-  const res = await request(app).post("/api/v1/auth/login").send({ email, password });
+  const user = await prisma.user.findUnique({
+    where: { email },
+    include: { tenants: true },
+  });
+  const tenantId = user?.tenants[0]?.tenantId;
+  const res = await request(app).post("/api/v1/auth/login").send({ email, password, tenantId });
   if (res.status !== 200) return null;
   return res.body.data.accessToken as string;
 }

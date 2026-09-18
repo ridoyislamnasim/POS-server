@@ -11,12 +11,10 @@
     "start": "node dist/index.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
-    "db:seed": "tsx src/seed.ts",
     "test": "vitest run"
   },
   "prisma": {
-    "schema": "prisma/schema",
-    "seed": "tsx src/seed.ts"
+    "schema": "prisma/schema"
   },
   "dependencies": {
     "@prisma/client": "^6.5.0",

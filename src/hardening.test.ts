@@ -43,7 +43,12 @@ async function ensureOtherCashier() {
 }
 
 async function login(email: string, password = "Cashier123!") {
-  const res = await request(app).post("/api/v1/auth/login").send({ email, password });
+  const user = await prisma.user.findUnique({
+    where: { email },
+    include: { tenants: true },
+  });
+  const tenantId = user?.tenants[0]?.tenantId;
+  const res = await request(app).post("/api/v1/auth/login").send({ email, password, tenantId });
   expect(res.status).toBe(200);
   return res.body.data.accessToken as string;
 }
@@ -365,9 +370,14 @@ describe("hardening", () => {
   });
 
   it("cookie POST without CSRF is rejected", async () => {
+    const ownerUser = await prisma.user.findUnique({
+      where: { email: "owner@nokshi.local" },
+      include: { tenants: true },
+    });
     const signed = await request(app).post("/api/v1/auth/login").send({
       email: "owner@nokshi.local",
       password: "Owner123!",
+      tenantId: ownerUser?.tenants[0]?.tenantId,
     });
     expect(signed.status).toBe(200);
     const cookies = signed.headers["set-cookie"];

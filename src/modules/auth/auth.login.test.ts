@@ -78,35 +78,26 @@ describe("POST /api/v1/auth/login", () => {
   });
 
   describe("Normal tenant-scoped users", () => {
-    it("tenant owner login without tenantId succeeds (defaults to first membership)", async () => {
+    it("tenant owner login without tenantId returns 403 Tenant ID required", async () => {
       const res = await request(app)
         .post("/api/v1/auth/login")
         .send({ email: OWNER_EMAIL, password: OWNER_PASS });
 
-      expect(res.status).toBe(200);
-      expect(res.body.data.accessToken).toBeDefined();
-      const user = res.body.data.user;
-      expect(user.email).toBe(OWNER_EMAIL);
-      expect(user.tenant).toBeDefined();
-      expect(user.tenant.id).toBeDefined();
-
-      const payload = decodeJwt(res.body.data.accessToken);
-      expect(payload.tenantId).toBeDefined();
-      expect(typeof payload.tenantId).toBe("string");
+      expect(res.status).toBe(403);
+      expect(res.body.error.message).toBe("Tenant ID required");
     });
 
     it("tenant owner login with valid tenantId succeeds", async () => {
-      const loginRes = await request(app)
+      const platformLogin = await request(app)
         .post("/api/v1/auth/login")
-        .send({ email: OWNER_EMAIL, password: OWNER_PASS });
+        .send({ email: PLATFORM_EMAIL, password: PLATFORM_PASS });
+      expect(platformLogin.status).toBe(200);
 
-      expect(loginRes.status).toBe(200);
-
-      const userRes = await request(app)
+      const meRes = await request(app)
         .get("/api/v1/auth/me")
-        .set("Authorization", `Bearer ${loginRes.body.data.accessToken}`);
-
-      const firstTenantId = userRes.body.data.tenants[0].id;
+        .set("Authorization", `Bearer ${platformLogin.body.data.accessToken}`);
+      expect(meRes.status).toBe(200);
+      const firstTenantId = meRes.body.data.tenants[0].id;
 
       const res = await request(app)
         .post("/api/v1/auth/login")
@@ -123,19 +114,25 @@ describe("POST /api/v1/auth/login", () => {
         .send({ email: OWNER_EMAIL, password: OWNER_PASS, tenantId: "nonexistent-tenant-id" });
 
       expect(res.status).toBe(403);
+      expect(res.body.error.message).toBe("No tenant access");
     });
 
-    it("cashier login without tenantId succeeds (defaults to first membership)", async () => {
+    it("tenant owner login with empty-string tenantId returns 403 Tenant ID required", async () => {
+      const res = await request(app)
+        .post("/api/v1/auth/login")
+        .send({ email: OWNER_EMAIL, password: OWNER_PASS, tenantId: "" });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error.message).toBe("Tenant ID required");
+    });
+
+    it("cashier login without tenantId returns 403 Tenant ID required", async () => {
       const res = await request(app)
         .post("/api/v1/auth/login")
         .send({ email: CASHIER_EMAIL, password: CASHIER_PASS });
 
-      expect(res.status).toBe(200);
-      expect(res.body.data.accessToken).toBeDefined();
-      const user = res.body.data.user;
-      expect(user.email).toBe(CASHIER_EMAIL);
-      expect(user.tenant).toBeDefined();
-      expect(user.isPlatform).toBe(false);
+      expect(res.status).toBe(403);
+      expect(res.body.error.message).toBe("Tenant ID required");
     });
   });
 

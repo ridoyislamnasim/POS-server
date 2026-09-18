@@ -65,12 +65,25 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       }
     }
 
-    const membership = decoded.tenantId
-      ? user.tenants.find((t) => t.tenantId === decoded.tenantId)
-      : user.tenants.find((t) => t.isPlatform) ?? user.tenants[0];
-    if (!membership) return fail(res, "FORBIDDEN", "Tenant access revoked", 403);
-    const tenantId = membership.tenantId;
-    const tenantRoles = user.roles.filter((r) => r.role.tenantId == null || r.role.tenantId === tenantId);
+    // Role is read from the database — never trust a role claim from the token/request.
+    const isPlatformUser = user.roles.some((r) => r.role.key === "PLATFORM_SUPER_ADMIN");
+
+    let membership: (typeof user.tenants)[number] | null = null;
+    if (decoded.tenantId) {
+      membership = user.tenants.find((t) => t.tenantId === decoded.tenantId) ?? null;
+      if (!membership) return fail(res, "FORBIDDEN", "Tenant access revoked", 403);
+    } else if (!isPlatformUser) {
+      membership = user.tenants.find((t) => t.isPlatform) ?? user.tenants[0] ?? null;
+      if (!membership) return fail(res, "FORBIDDEN", "Tenant access revoked", 403);
+    }
+    // A platform super admin holding a null-tenant token keeps a null tenant
+    // context on purpose: membership stays null so no tenant is forced onto
+    // the session. This covers bootstrap platform accounts that have no
+    // tenant membership at all (/me, /logout, platform APIs).
+    const tenantId = membership?.tenantId ?? null;
+    const tenantRoles = tenantId
+      ? user.roles.filter((r) => r.role.tenantId == null || r.role.tenantId === tenantId)
+      : user.roles.filter((r) => r.role.tenantId == null);
     const permissions = [
       ...new Set(
         tenantRoles.flatMap((r) => r.role.permissions.map((p) => p.permission.key)),
@@ -80,9 +93,9 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       userId: user.id,
       tenantId,
       sessionId: decoded.sid,
-      isPlatform: membership.isPlatform ?? false,
+      isPlatform: isPlatformUser || (membership?.isPlatform ?? false),
       branchIds: user.branches.map((b) => b.branchId),
-      allBranches: membership.allBranches ?? false,
+      allBranches: membership?.allBranches ?? false,
       permissions,
       roles: tenantRoles.map((r) => r.role.key),
       businessDate: businessDateInTz(),

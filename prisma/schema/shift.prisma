@@ -8,7 +8,7 @@ model Shift {
   registerId   String
   register     Register    @relation(fields: [registerId], references: [id])
   cashierId    String
-  cashier      User        @relation(fields: [cashierId], references: [id])
+  cashier      User        @relation(fields: [cashierId], references: [id], onDelete: Cascade)
   status       ShiftStatus @default(OPEN)
   openedAt     DateTime    @default(now())
   closedAt     DateTime?

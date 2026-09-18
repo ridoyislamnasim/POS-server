@@ -23,7 +23,7 @@ model User {
 model UserTenant {
   id          String @id @default(cuid())
   userId      String
-  user        User   @relation(fields: [userId], references: [id])
+  user        User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   tenantId    String
   tenant      Tenant @relation(fields: [tenantId], references: [id])
   allBranches Boolean @default(false)
@@ -52,7 +52,7 @@ model Permission {
 model RolePermission {
   roleId       String
   permissionId String
-  role         Role       @relation(fields: [roleId], references: [id])
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
   permission   Permission @relation(fields: [permissionId], references: [id])
 
   @@id([roleId, permissionId])
@@ -61,8 +61,8 @@ model RolePermission {
 model UserRole {
   userId String
   roleId String
-  user   User @relation(fields: [userId], references: [id])
-  role   Role @relation(fields: [roleId], references: [id])
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
   @@id([userId, roleId])
 }
@@ -70,7 +70,7 @@ model UserRole {
 model UserBranch {
   userId   String
   branchId String
-  user     User   @relation(fields: [userId], references: [id])
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   branch   Branch @relation(fields: [branchId], references: [id])
 
   @@id([userId, branchId])
@@ -79,7 +79,7 @@ model UserBranch {
 model Session {
   id               String    @id @default(cuid())
   userId           String
-  user             User      @relation(fields: [userId], references: [id])
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   refreshTokenHash String
   expiresAt        DateTime
   revokedAt        DateTime?

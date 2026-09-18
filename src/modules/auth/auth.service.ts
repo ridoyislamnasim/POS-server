@@ -48,9 +48,10 @@ export const authService = {
         throw new AppError("FORBIDDEN", "No tenant access", 403);
       }
     } else {
-      membership = input.tenantId
-        ? (user.tenants.find((t) => t.tenantId === input.tenantId) ?? null)
-        : (user.tenants[0] ?? null);
+      if (!input.tenantId) {
+        throw new AppError("FORBIDDEN", "Tenant ID required", 403);
+      }
+      membership = user.tenants.find((t) => t.tenantId === input.tenantId) ?? null;
       if (!membership) throw new AppError("FORBIDDEN", "No tenant access", 403);
     }
 
