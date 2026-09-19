@@ -2,6 +2,13 @@ export type UpdateRoleInput = {
   permissions: string[];
 };
 
+export type CreateRoleInput = {
+  name: string;
+  key: string;
+  permissions?: string[];
+  tenantId?: string;
+};
+
 export type CreateAttendanceInput = {
   userId: string;
   branchId: string;

@@ -4,9 +4,9 @@ import type { RequestContext } from "../../types.js";
 
 /** Data-access for staff/roles/attendance/security. No business rules here. */
 export const staffRepository = {
-  listRoles(tenantId: string) {
+  listRoles(tenantId: string | null) {
     return prisma.role.findMany({
-      where: { OR: [{ tenantId }, { tenantId: null }] },
+      where: tenantId ? { OR: [{ tenantId }, { tenantId: null }] } : {},
       include: {
         permissions: { include: { permission: true } },
         _count: { select: { users: true } },
@@ -14,9 +14,26 @@ export const staffRepository = {
     });
   },
 
-  findRole(tenantId: string, id: string) {
+  findRole(tenantId: string | null, id: string) {
     return prisma.role.findFirst({
-      where: { id, OR: [{ tenantId }, { tenantId: null }] },
+      where: tenantId ? { id, OR: [{ tenantId }, { tenantId: null }] } : { id },
+    });
+  },
+
+  findRoleByKey(tenantId: string | null, key: string) {
+    return prisma.role.findFirst({ where: { tenantId, key }, select: { id: true } });
+  },
+
+  createRole(data: { key: string; name: string; tenantId: string | null; permissionIds: string[] }) {
+    return prisma.role.create({
+      data: {
+        key: data.key,
+        name: data.name,
+        tenantId: data.tenantId,
+        permissions: data.permissionIds.length
+          ? { create: data.permissionIds.map((permissionId) => ({ permissionId })) }
+          : undefined,
+      },
     });
   },
 
@@ -31,6 +48,14 @@ export const staffRepository = {
         data: permissionIds.map((permissionId) => ({ roleId, permissionId })),
       }),
     ]);
+  },
+
+  countRoleUsers(roleId: string) {
+    return prisma.userRole.count({ where: { roleId } });
+  },
+
+  deleteRole(id: string) {
+    return prisma.role.delete({ where: { id } });
   },
 
   listAttendance(opts: { where: Record<string, unknown>; skip: number; take: number; orderBy: Record<string, unknown> }) {

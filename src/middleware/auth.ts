@@ -148,6 +148,13 @@ export function requirePlatform(req: Request, res: Response, next: NextFunction)
   return fail(res, "FORBIDDEN", "Platform access required", 403);
 }
 
+/** Strict platform role gate: only the actual PLATFORM_SUPER_ADMIN role key passes. */
+export function requirePlatformSuperAdmin(req: Request, res: Response, next: NextFunction) {
+  const ctx = (req as AuthedRequest).ctx;
+  if (ctx?.roles?.includes("PLATFORM_SUPER_ADMIN")) return next();
+  return fail(res, "FORBIDDEN", "Platform access required", 403);
+}
+
 export function requirePermission(key: string) {
   return (req: Request, res: Response, next: NextFunction) => {
     const ctx = (req as AuthedRequest).ctx;

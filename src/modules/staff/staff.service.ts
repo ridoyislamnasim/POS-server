@@ -14,7 +14,7 @@ import { Permissions } from "../../shared/permissions.js";
 import { AppError } from "../../utils/errors.js";
 import type { RequestContext } from "../../types.js";
 import { staffRepository } from "./staff.repository.js";
-import type { CreateAttendanceInput, CreateShiftTemplateInput, UpdateRoleInput } from "./staff.types.js";
+import type { CreateAttendanceInput, CreateRoleInput, CreateShiftTemplateInput, UpdateRoleInput } from "./staff.types.js";
 
 /** Staff/HR business logic. No Express `req`/`res` here. */
 export const staffService = {
@@ -25,7 +25,7 @@ export const staffService = {
   async listRoles(ctx: RequestContext, query: Record<string, unknown>) {
     const list = parseListQuery(query, { sortable: ["name", "key"], defaultSort: "name", defaultOrder: "asc" });
     const q = list.search.toLowerCase();
-    const roles = await staffRepository.listRoles(tenantId(ctx));
+    const roles = await staffRepository.listRoles(ctx.isPlatform ? null : tenantId(ctx));
     const mapped = roles
       .filter((r) => r.key !== "PLATFORM_SUPER_ADMIN" || ctx.isPlatform)
       .filter((r) => !q || r.name.toLowerCase().includes(q) || r.key.toLowerCase().includes(q))
@@ -40,8 +40,43 @@ export const staffService = {
     return { rows: mapped.slice(list.skip, list.skip + list.take), pagination: paginationMeta(mapped.length, list.page, list.limit) };
   },
 
+  async createRole(ctx: RequestContext, input: CreateRoleInput) {
+    if (!ctx.roles.includes("PLATFORM_SUPER_ADMIN")) {
+      throw new AppError("FORBIDDEN", "Platform access required", 403);
+    }
+    const allowed = new Set<string>(Permissions);
+    const perms = await staffRepository.listPermissionsByKeys(
+      (input.permissions ?? []).filter((k) => allowed.has(k)),
+    );
+    const tenantIdValue = input.tenantId ?? null;
+    const existing = await staffRepository.findRoleByKey(tenantIdValue, input.key);
+    if (existing) {
+      throw new AppError("CONFLICT", `Role key "${input.key}" already exists`, 409);
+    }
+    const role = await staffRepository.createRole({
+      key: input.key,
+      name: input.name,
+      tenantId: tenantIdValue,
+      permissionIds: perms.map((p) => p.id),
+    });
+    await writeAudit({
+      ctx,
+      action: "role.create",
+      entityType: "Role",
+      entityId: role.id,
+      after: { key: input.key, name: input.name, tenantId: tenantIdValue, permissions: perms.map((p) => p.key) },
+    });
+    return {
+      id: role.id,
+      key: role.key,
+      name: role.name,
+      tenantId: role.tenantId,
+      permissions: perms.map((p) => p.key),
+    };
+  },
+
   async updateRole(ctx: RequestContext, id: string, input: UpdateRoleInput) {
-    const role = await staffRepository.findRole(tenantId(ctx), id);
+    const role = await staffRepository.findRole(ctx.isPlatform ? null : tenantId(ctx), id);
     if (!role) throw new AppError("NOT_FOUND", "Role not found", 404);
     if (role.tenantId == null && !ctx.isPlatform) {
       throw new AppError("FORBIDDEN", "Cannot edit platform role", 403);
@@ -56,6 +91,30 @@ export const staffService = {
     );
     await writeAudit({ ctx, action: "role.update", entityType: "Role", entityId: role.id, after: { keys } });
     return { id: role.id, permissions: perms.map((p) => p.key) };
+  },
+
+  async deleteRole(ctx: RequestContext, id: string) {
+    if (!ctx.roles.includes("PLATFORM_SUPER_ADMIN")) {
+      throw new AppError("FORBIDDEN", "Platform access required", 403);
+    }
+    const role = await staffRepository.findRole(null, id);
+    if (!role) throw new AppError("NOT_FOUND", "Role not found", 404);
+    if (role.key === "PLATFORM_SUPER_ADMIN") {
+      throw new AppError("FORBIDDEN", "Cannot delete the platform super admin role", 403);
+    }
+    const assigned = await staffRepository.countRoleUsers(role.id);
+    if (assigned > 0) {
+      throw new AppError("CONFLICT", `Role is assigned to ${assigned} user(s); unassign first`, 409);
+    }
+    await staffRepository.deleteRole(role.id);
+    await writeAudit({
+      ctx,
+      action: "role.delete",
+      entityType: "Role",
+      entityId: role.id,
+      after: { key: role.key, name: role.name },
+    });
+    return { id: role.id };
   },
 
   async listAttendance(ctx: RequestContext, query: Record<string, unknown>) {

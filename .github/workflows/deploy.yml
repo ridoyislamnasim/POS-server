@@ -24,7 +24,7 @@ on:
     types: [published]
 
 concurrency:
-  group: backend-cicd-${{ github.ref }}
+  group: backend-cicd-${{ github.ref }}-${{ github.event_name }}-${{ github.event.inputs.environment }}
   cancel-in-progress: true
 
 env:
@@ -129,7 +129,7 @@ jobs:
           DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
 
       - name: Type check
-        run: npx tsc --noEmit
+        run: pnpm exec tsc --noEmit
 
       - name: Run tests
         run: pnpm test
@@ -165,7 +165,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Type check
-        run: npx tsc --noEmit
+        run: pnpm exec tsc --noEmit
 
   # ── Build ─────────────────────────────────────────────────
   build:
@@ -211,13 +211,13 @@ jobs:
             prisma/
             package.json
             pnpm-lock.yaml
-          retention-days: 5
+          retention-days: 14
 
   # ── Deploy to DigitalOcean via SSH ────────────────────────
   deploy:
     needs: [resolve-env, build, test]
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.event_name == 'release'
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || github.event_name == 'release'
     environment: ${{ needs.resolve-env.outputs.environment }}
     steps:
       - name: Download build artifact
@@ -242,28 +242,10 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "$DO_SSH_KEY" > ~/.ssh/digitalocean
           chmod 600 ~/.ssh/digitalocean
+          ssh-keygen -R "$DO_HOST" 2>/dev/null || true
           ssh-keyscan -p "$DO_PORT" "$DO_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
           echo "SSH configured: host=$DO_HOST user=$DO_USER port=$DO_PORT"
-
-      - name: Pull latest code on server
-        shell: bash
-        env:
-          DO_HOST: ${{ secrets.DO_HOST }}
-          DO_PORT: "22"
-          DO_USER: ${{ secrets.DO_USER }}
-        run: |
-          ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" '
-            set -e
-            cd ~/pos/POS-server
-            if [ -d .git ]; then
-              git stash push -m "deploy-autostash" || true
-              git pull --ff-only
-              echo "Server code updated to $(git rev-parse --short HEAD) on $(git branch --show-current)"
-            else
-              echo "::warning::No git repo at ~/pos/POS-server, skipping code pull"
-            fi
-          '
 
       - name: Backup current version on server
         shell: bash
@@ -276,9 +258,11 @@ jobs:
             set -e
             cd ~/pos/POS-server
             if [ -d dist ]; then
-              rm -rf dist.backup
-              mv dist dist.backup
-              echo "Backed up current dist to dist.backup"
+              TS="$(date -u +%Y%m%d-%H%M%S)"
+              mv dist "dist.backup-$TS"
+              echo "Backed up current dist to dist.backup-$TS"
+              ls -dt dist.backup-* 2>/dev/null | tail -n +4 | xargs -r rm -rf || true
+              echo "Keeping latest 3 backups"
             fi
             mkdir -p dist
           '
@@ -320,19 +304,34 @@ jobs:
             set -e
             cd ~/pos/POS-server
 
+            LATEST_BACKUP="$(ls -dt dist.backup-* 2>/dev/null | head -n 1 || true)"
+            if [ -z "$LATEST_BACKUP" ] && [ -d dist.backup ]; then LATEST_BACKUP="dist.backup"; fi
+            auto_rollback() {
+              trap - ERR
+              echo "::error::Deploy step failed — restoring previous version"
+              if [ -n "${LATEST_BACKUP:-}" ] && [ -d "$LATEST_BACKUP" ]; then
+                rm -rf dist
+                cp -a "$LATEST_BACKUP" dist
+                echo "WARNING: Prisma migrations applied by this deploy are NOT reverted."
+                echo "If they were not backward-compatible, verify the app or forward-fix."
+                if pm2 describe backend >/dev/null 2>&1; then
+                  pm2 restart backend --update-env || echo "::warning::pm2 restart during auto-recovery failed"
+                fi
+              else
+                echo "::warning::No backup available for auto-recovery"
+              fi
+              exit 1
+            }
+            trap auto_rollback ERR
+
             corepack enable
             corepack prepare pnpm@9 --activate
 
-            pnpm install --frozen-lockfile --prod
+            pnpm install --frozen-lockfile
 
             echo "Applying pending database migrations..."
             if [ -d prisma ]; then
-              if [ -x node_modules/.bin/prisma ]; then
-                ./node_modules/.bin/prisma migrate deploy
-              else
-                PRISMA_VERSION="$(node -p "require('./package.json').devDependencies.prisma.replace(/^[\^~>=< ]+/, '')")"
-                npx --yes "prisma@$PRISMA_VERSION" migrate deploy
-              fi
+              ./node_modules/.bin/prisma migrate deploy
               echo "Migrations up to date"
             else
               echo "::error::prisma/ directory not found, cannot apply migrations"
@@ -345,6 +344,7 @@ jobs:
               pm2 start dist/index.js --name backend --update-env
             fi
 
+            trap - ERR
             pm2 save
 
             echo "--- live process diagnostics ---"
@@ -460,6 +460,7 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "$DO_SSH_KEY" > ~/.ssh/digitalocean
           chmod 600 ~/.ssh/digitalocean
+          ssh-keygen -R "$DO_HOST" 2>/dev/null || true
           ssh-keyscan -p "$DO_PORT" "$DO_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
           echo "SSH configured: host=$DO_HOST user=$DO_USER port=$DO_PORT"
@@ -475,23 +476,28 @@ jobs:
             set -e
             cd ~/pos/POS-server
 
-            if [ -d dist.backup ]; then
-              rm -rf dist.current
-              mv dist dist.current
-              mv dist.backup dist
-
-              corepack enable
-              corepack prepare pnpm@9 --activate
-              pnpm install --frozen-lockfile --prod
-
-              pm2 restart backend --update-env
-              pm2 save
-
-              echo "Rolled back to previous version"
-            else
+            LATEST="$(ls -dt dist.backup-* 2>/dev/null | head -n 1 || true)"
+            if [ -z "$LATEST" ] && [ -d dist.backup ]; then LATEST="dist.backup"; fi
+            if [ -z "$LATEST" ]; then
               echo "No backup found, cannot rollback"
               exit 1
             fi
+            echo "Restoring $LATEST ..."
+            rm -rf dist.failed
+            if [ -d dist ]; then mv dist dist.failed; fi
+            mv "$LATEST" dist
+
+            corepack enable
+            corepack prepare pnpm@9 --activate
+            pnpm install --frozen-lockfile
+
+            echo "WARNING: Prisma migrations applied by the failed deploy are NOT reverted."
+            echo "If they were not backward-compatible, this version may fail — prefer a forward-fix."
+
+            pm2 restart backend --update-env
+            pm2 save
+
+            echo "Rolled back using $LATEST (previous dist kept at dist.failed)"
           '
 
       - name: Verify rollback
@@ -503,6 +509,8 @@ jobs:
             sleep 3
             if curl -fsS "$BACKEND_URL/api/health"; then
               echo "Backend healthy after rollback"
+              echo "Live version after rollback:"
+              curl -fsS "$BACKEND_URL/api/version" || true
               exit 0
             fi
           done

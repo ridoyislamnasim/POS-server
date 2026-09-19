@@ -36,6 +36,27 @@ export const staffController = {
     }
   },
 
+  async createRole(req: Request, res: Response, next: NextFunction) {
+    try {
+      return ok(
+        res,
+        await staffService.createRole((req as AuthedRequest).ctx, req.body ?? {}),
+        undefined,
+        201,
+      );
+    } catch (e) {
+      return next(e);
+    }
+  },
+
+  async deleteRole(req: Request, res: Response, next: NextFunction) {
+    try {
+      return ok(res, await staffService.deleteRole((req as AuthedRequest).ctx, String(req.params.id)));
+    } catch (e) {
+      return next(e);
+    }
+  },
+
   async listAttendance(req: Request, res: Response, next: NextFunction) {
     try {
       const { rows, pagination } = await staffService.listAttendance(
