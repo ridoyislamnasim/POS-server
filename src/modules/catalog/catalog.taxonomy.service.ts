@@ -52,7 +52,7 @@ export const catalogTaxonomyService = {
       tenantId: ctx.tenantId!,
       name,
       slug: slugify(String(input.slug || name)),
-      status: (input.status as "ACTIVE" | "INACTIVE" | "ARCHIVED" | "DRAFT") ?? "ACTIVE",
+      status: (input.status as "ACTIVE" | "INACTIVE" | "ARCHIVED" | "DRAFT") || "ACTIVE",
       sortOrder: Number(input.sortOrder ?? 0),
     });
   },
@@ -116,7 +116,7 @@ export const catalogTaxonomyService = {
       categoryId,
       name,
       slug: slugify(String(input.slug || name)),
-      status: (input.status as "ACTIVE" | "INACTIVE" | "ARCHIVED" | "DRAFT") ?? "ACTIVE",
+      status: (input.status as "ACTIVE" | "INACTIVE" | "ARCHIVED" | "DRAFT") || "ACTIVE",
       sortOrder: Number(input.sortOrder ?? 0),
     });
   },
@@ -167,7 +167,7 @@ export const catalogTaxonomyService = {
     return catalogRepository.createBrand({
       tenantId: ctx.tenantId!,
       name,
-      status: (input.status as "ACTIVE" | "INACTIVE" | "ARCHIVED" | "DRAFT") ?? "ACTIVE",
+      status: (input.status as "ACTIVE" | "INACTIVE" | "ARCHIVED" | "DRAFT") || "ACTIVE",
     });
   },
 
@@ -222,7 +222,7 @@ export const catalogTaxonomyService = {
       tenantId: ctx.tenantId!,
       name,
       abbreviation,
-      status: (input.status as "ACTIVE" | "INACTIVE") ?? "ACTIVE",
+      status: (input.status as "ACTIVE" | "INACTIVE") || "ACTIVE",
       sortOrder: Number(input.sortOrder ?? 0),
     });
   },

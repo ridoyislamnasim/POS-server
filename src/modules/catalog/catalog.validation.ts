@@ -3,7 +3,7 @@ import { z } from "zod";
 export const categorySchema = z.object({
   name: z.string().min(1, "name required"),
   slug: z.string().optional(),
-  status: z.string().optional(),
+  status: z.string().optional().default("ACTIVE"),
   sortOrder: z.union([z.string(), z.number()]).optional(),
 });
 
@@ -11,20 +11,20 @@ export const subcategorySchema = z.object({
   name: z.string().min(1, "name and categoryId required"),
   categoryId: z.string().min(1, "name and categoryId required"),
   slug: z.string().optional(),
-  status: z.string().optional(),
+  status: z.string().optional().default("ACTIVE"),
   sortOrder: z.union([z.string(), z.number()]).optional(),
 });
 
 export const brandSchema = z.object({
   name: z.string().min(1, "name required"),
-  status: z.string().optional(),
+  status: z.string().optional().default("ACTIVE"),
 });
 
 export const unitSchema = z.object({
   name: z.string().min(1, "name and abbreviation required"),
   abbreviation: z.string().optional(),
   code: z.string().optional(),
-  status: z.string().optional(),
+  status: z.string().optional().default("ACTIVE"),
   sortOrder: z.union([z.string(), z.number()]).optional(),
 });
 
