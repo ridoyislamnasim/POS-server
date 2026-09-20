@@ -63,7 +63,12 @@ export const authController = {
   async updateProfile(req: Request, res: Response, next: NextFunction) {
     try {
       const body = req.body as UpdateProfileBody;
-      const imageUrl = body.imageUrl;
+      // Accept either an existing URL/null, or a freshly-picked base64 data
+      // URL which must be persisted to disk instead of the database.
+      let imageUrl = body.imageUrl;
+      if (typeof imageUrl === "string" && imageUrl.startsWith("data:")) {
+        imageUrl = await saveDataUrl(imageUrl);
+      }
       const result = await authService.updateProfile((req as AuthedRequest).ctx, {
         name: body.name,
         imageUrl,

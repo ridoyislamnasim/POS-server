@@ -157,9 +157,15 @@ async me(ctx: RequestContext) {
    async updateProfile(ctx: RequestContext, input: { name?: string; imageUrl?: string | null }) {
      const user = await authRepository.findUserById(ctx.userId);
      if (!user) throw new AppError("UNAUTHORIZED", "Not found", 401);
-     const name = input.name ?? user.name;
+
+     const name =
+       input.name !== undefined ? input.name.trim() || user.name : user.name;
      const imageUrl = input.imageUrl !== undefined ? input.imageUrl : user.imageUrl;
-     const updated = await authRepository.updateUserImage(ctx.userId, imageUrl);
+
+     const updated = await authRepository.updateUserProfile(ctx.userId, {
+       name,
+       imageUrl,
+     });
      await writeAudit({
        ctx,
        action: "profile.update",

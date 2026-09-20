@@ -81,10 +81,10 @@ export const authRepository = {
     });
   },
 
-  updateUserImage(userId: string, imageUrl: string | null) {
+  updateUserProfile(userId: string, data: { name?: string; imageUrl?: string | null }) {
     return prisma.user.update({
       where: { id: userId },
-      data: { imageUrl },
+      data: { name: data.name, imageUrl: data.imageUrl },
       select: { id: true, name: true, email: true, locale: true, imageUrl: true },
     });
   },
