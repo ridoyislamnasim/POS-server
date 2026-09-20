@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { PAYMENT_REQUIRED_MESSAGE } from "../../middleware/auth.js";
 import { tenantId } from "../../lib/erp.js";
-import { parseListQuery, withPagination } from "../../lib/list-query.js";
+import { acceptId, parseListQuery, withPagination } from "../../lib/list-query.js";
 import { prisma } from "../../lib/prisma.js";
 import { writeAudit } from "../../lib/audit.js";
 import { AppError } from "../../utils/errors.js";
@@ -14,6 +14,30 @@ import type { ChangePlanInput, CreateApiKeyInput, CreateBackupInput } from "./sa
 function stripKeyHash<T extends { keyHash?: unknown }>(row: T): Omit<T, "keyHash"> {
   const { keyHash: _keyHash, ...safe } = row;
   return safe;
+}
+
+function assertPlatformBackupAccess(ctx: RequestContext) {
+  if (!ctx.roles.includes("PLATFORM_SUPER_ADMIN")) {
+    throw new AppError("FORBIDDEN", "Platform access required", 403);
+  }
+}
+
+/**
+ * Backup target tenant.
+ * PLATFORM_SUPER_ADMIN normally has no tenant in context (tenantId = null), so
+ * the tenant must come from an explicit, validated tenantId on the request.
+ * A non-platform caller (should already be blocked by requirePlatformSuperAdmin)
+ * falls back to its own tenant context.
+ */
+async function backupTenantId(ctx: RequestContext, raw: unknown): Promise<string> {
+  const explicit = acceptId(raw);
+  if (explicit) {
+    const tenant = await prisma.tenant.findUnique({ where: { id: explicit }, select: { id: true } });
+    if (!tenant) throw new AppError("NOT_FOUND", "Tenant not found", 404);
+    return tenant.id;
+  }
+  if (ctx.tenantId) return ctx.tenantId;
+  throw new AppError("VALIDATION", "tenantId required", 400);
 }
 
 /** Tenant SaaS self-service logic. No Express `req`/`res` here. */
@@ -71,7 +95,8 @@ export const saasService = {
   },
 
   async createBackup(ctx: RequestContext, input: CreateBackupInput) {
-    const tid = tenantId(ctx);
+    assertPlatformBackupAccess(ctx);
+    const tid = await backupTenantId(ctx, (input as { tenantId?: unknown }).tenantId);
     const payload = { ...(await saasRepository.buildBackupPayload(tid)), exportedAt: new Date().toISOString() };
     const json = JSON.stringify(payload);
     const rec = await saasRepository.createBackupRecord({
@@ -92,16 +117,18 @@ export const saasService = {
   },
 
   async listBackups(ctx: RequestContext, query: Record<string, unknown>) {
+    assertPlatformBackupAccess(ctx);
     const list = parseListQuery(query, { sortable: ["createdAt"], defaultSort: "createdAt", defaultOrder: "desc" });
-    const tid = tenantId(ctx);
+    const tid = await backupTenantId(ctx, query.tenantId);
     return withPagination(list, {
       find: (skip, take) => saasRepository.listBackups({ tenantId: tid, skip, take }),
       count: () => saasRepository.countBackups(tid),
     });
   },
 
-  async downloadBackup(ctx: RequestContext, id: string) {
-    const tid = tenantId(ctx);
+  async downloadBackup(ctx: RequestContext, id: string, query?: Record<string, unknown>) {
+    assertPlatformBackupAccess(ctx);
+    const tid = await backupTenantId(ctx, query?.tenantId);
     const rec = await saasRepository.findBackup(tid, id);
     if (!rec) throw new AppError("NOT_FOUND", "Backup not found", 404);
     const payload = { ...(await saasRepository.buildBackupPayload(tid)), exportedAt: rec.createdAt.toISOString() };

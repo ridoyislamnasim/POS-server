@@ -67,7 +67,7 @@ export const saasController = {
 
   async downloadBackup(req: Request, res: Response, next: NextFunction) {
     try {
-      return ok(res, await saasService.downloadBackup((req as AuthedRequest).ctx, String(req.params.id)));
+      return ok(res, await saasService.downloadBackup((req as AuthedRequest).ctx, String(req.params.id), req.query as Record<string, unknown>));
     } catch (e) {
       return next(e);
     }

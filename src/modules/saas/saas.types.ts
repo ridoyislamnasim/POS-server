@@ -8,4 +8,5 @@ export type CreateApiKeyInput = {
 
 export type CreateBackupInput = {
   note?: string;
+  tenantId?: string;
 };
