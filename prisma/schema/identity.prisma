@@ -10,6 +10,7 @@ model User {
   locale       String     @default("en")
   timezone     String     @default("Asia/Dhaka")
   mfaEnabled   Boolean    @default(false)
+  imageUrl     String?
   createdAt    DateTime   @default(now())
 
   tenants     UserTenant[]

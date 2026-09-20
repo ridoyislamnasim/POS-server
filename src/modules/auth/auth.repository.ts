@@ -74,6 +74,29 @@ export const authRepository = {
     });
   },
 
+  findUserById(userId: string) {
+    return prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, name: true, email: true, locale: true, imageUrl: true, passwordHash: true },
+    });
+  },
+
+  updateUserImage(userId: string, imageUrl: string | null) {
+    return prisma.user.update({
+      where: { id: userId },
+      data: { imageUrl },
+      select: { id: true, name: true, email: true, locale: true, imageUrl: true },
+    });
+  },
+
+  updatePassword(userId: string, passwordHash: string) {
+    return prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash },
+      select: { id: true },
+    });
+  },
+
   listBranchesForTenant(tenantId: string) {
     return prisma.branch.findMany({
       where: { tenantId },

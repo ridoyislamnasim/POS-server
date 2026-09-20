@@ -113,37 +113,82 @@ export const authService = {
     return { signedOut: true };
   },
 
-  async me(ctx: RequestContext) {
-    const user = await authRepository.findUserForMe(ctx.userId);
-    if (!user) throw new AppError("UNAUTHORIZED", "Not found", 401);
+async me(ctx: RequestContext) {
+     const user = await authRepository.findUserForMe(ctx.userId);
+     if (!user) throw new AppError("UNAUTHORIZED", "Not found", 401);
 
-    const branches =
-      ctx.allBranches || ctx.isPlatform
-        ? ctx.tenantId
-          ? await authRepository.listBranchesForTenant(ctx.tenantId)
-          : []
-        : user.branches.map((b) => b.branch);
+     const branches =
+       ctx.allBranches || ctx.isPlatform
+         ? ctx.tenantId
+           ? await authRepository.listBranchesForTenant(ctx.tenantId)
+           : []
+         : user.branches.map((b) => b.branch);
 
-    const tenant = ctx.tenantId ? await authRepository.findTenantApiAccess(ctx.tenantId) : null;
-    const apiAccessEnabled = ctx.isPlatform ? true : tenant?.apiAccessEnabled !== false;
+     const tenant = ctx.tenantId ? await authRepository.findTenantApiAccess(ctx.tenantId) : null;
+     const apiAccessEnabled = ctx.isPlatform ? true : tenant?.apiAccessEnabled !== false;
 
-    return {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      locale: user.locale,
-      permissions: ctx.permissions,
-      roles: ctx.roles,
-      tenantId: ctx.tenantId,
-      tenants: user.tenants.map((t) => t.tenant),
-      branches,
-      allBranches: ctx.allBranches,
-      isPlatform: ctx.isPlatform,
-      apiAccessEnabled,
-      lockMessage: apiAccessEnabled
-        ? null
-        : tenant?.apiAccessDisabledReason ||
-          "Please pay your previous month's bill to continue using the platform.",
-    };
-  },
+     return {
+       id: user.id,
+       name: user.name,
+       email: user.email,
+       locale: user.locale,
+       imageUrl: user.imageUrl ?? null,
+       permissions: ctx.permissions,
+       roles: ctx.roles,
+       tenantId: ctx.tenantId,
+       tenants: user.tenants.map((t) => t.tenant),
+       branches,
+       allBranches: ctx.allBranches,
+       isPlatform: ctx.isPlatform,
+       apiAccessEnabled,
+       lockMessage: apiAccessEnabled
+         ? null
+         : tenant?.apiAccessDisabledReason ||
+           "Please pay your previous month's bill to continue using the platform.",
+     };
+   },
+
+   async profile(ctx: RequestContext) {
+     const user = await authRepository.findUserById(ctx.userId);
+     if (!user) throw new AppError("UNAUTHORIZED", "Not found", 401);
+     return { id: user.id, name: user.name, email: user.email, locale: user.locale, imageUrl: user.imageUrl ?? null };
+   },
+
+   async updateProfile(ctx: RequestContext, input: { name?: string; imageUrl?: string | null }) {
+     const user = await authRepository.findUserById(ctx.userId);
+     if (!user) throw new AppError("UNAUTHORIZED", "Not found", 401);
+     const name = input.name ?? user.name;
+     const imageUrl = input.imageUrl !== undefined ? input.imageUrl : user.imageUrl;
+     const updated = await authRepository.updateUserImage(ctx.userId, imageUrl);
+     await writeAudit({
+       ctx,
+       action: "profile.update",
+       entityType: "User",
+       entityId: ctx.userId,
+       after: { name, imageUrl: imageUrl ? "updated" : "removed" },
+     });
+     return { id: updated.id, name: updated.name, email: updated.email, locale: updated.locale, imageUrl: updated.imageUrl };
+   },
+
+   async changePassword(ctx: RequestContext, input: { currentPassword: string; newPassword: string }) {
+     const user = await authRepository.findUserById(ctx.userId);
+     if (!user) throw new AppError("UNAUTHORIZED", "Not found", 401);
+
+     const good = await bcrypt.compare(input.currentPassword, user.passwordHash);
+     if (!good) throw new AppError("FORBIDDEN", "Current password is incorrect", 403);
+
+     if (input.newPassword.length < 8) {
+       throw new AppError("VALIDATION", "New password must be at least 8 characters", 400);
+     }
+
+     const newHash = await bcrypt.hash(input.newPassword, 12);
+     await authRepository.updatePassword(ctx.userId, newHash);
+     await writeAudit({
+       ctx,
+       action: "password.change",
+       entityType: "User",
+       entityId: ctx.userId,
+     });
+     return { changed: true };
+   },
 };

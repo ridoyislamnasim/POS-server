@@ -1,8 +1,10 @@
 import type { NextFunction, Request, Response } from "express";
-import { ok } from "../../utils/response.js";
+import { ok, fail } from "../../utils/response.js";
 import { clearAuthCookies, setAuthCookies } from "../../lib/cookies.js";
+import { saveDataUrl } from "../../lib/uploads.js";
 import type { AuthedRequest } from "../../types.js";
 import { authService } from "./auth.service.js";
+import type { UpdateProfileBody, ChangePasswordBody } from "./auth.types.js";
 
 /**
  * HTTP-only: extract req data, call the service, write the response.
@@ -43,6 +45,53 @@ export const authController = {
   async me(req: Request, res: Response, next: NextFunction) {
     try {
       const result = await authService.me((req as AuthedRequest).ctx);
+      return ok(res, result);
+    } catch (e) {
+      return next(e);
+    }
+  },
+
+  async profile(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await authService.profile((req as AuthedRequest).ctx);
+      return ok(res, result);
+    } catch (e) {
+      return next(e);
+    }
+  },
+
+  async updateProfile(req: Request, res: Response, next: NextFunction) {
+    try {
+      const body = req.body as UpdateProfileBody;
+      const imageUrl = body.imageUrl;
+      const result = await authService.updateProfile((req as AuthedRequest).ctx, {
+        name: body.name,
+        imageUrl,
+      });
+      return ok(res, result);
+    } catch (e) {
+      return next(e);
+    }
+  },
+
+  async uploadImage(req: Request, res: Response, next: NextFunction) {
+    try {
+      const body = req.body as { image?: string };
+      if (!body.image) {
+        return fail(res, "VALIDATION", "Image data required", 400);
+      }
+      const imageUrl = await saveDataUrl(body.image);
+      const result = await authService.updateProfile((req as AuthedRequest).ctx, { imageUrl });
+      return ok(res, result);
+    } catch (e) {
+      return next(e);
+    }
+  },
+
+  async changePassword(req: Request, res: Response, next: NextFunction) {
+    try {
+      const body = req.body as ChangePasswordBody;
+      const result = await authService.changePassword((req as AuthedRequest).ctx, body);
       return ok(res, result);
     } catch (e) {
       return next(e);
