@@ -72,7 +72,7 @@ function productPayload(body: Body, extra: { category?: string | null } = {}) {
     sellingPrice: retailStr ? calcFinalSellingPrice(body.retailPrice, body.discount) : undefined,
     purchasePrice: body.purchasePrice != null && body.purchasePrice !== "" ? String(body.purchasePrice) : undefined,
     wholesalePrice: body.wholesalePrice != null && body.wholesalePrice !== "" ? String(body.wholesalePrice) : undefined,
-    retailPrice: retailStr,
+    retailPrice: retailStr || undefined,
     discount: discountStr,
     profitMargin: retailStr ? calcProfitMargin(body.retailPrice, body.discount, body.purchasePrice) : undefined,
     minStock: body.minStock != null && body.minStock !== "" ? String(body.minStock) : undefined,
@@ -241,9 +241,14 @@ export const catalogProductsService = {
     const categoryId = String(body.categoryId ?? "");
     if (!name || !code) throw new AppError("VALIDATION", "name and code required", 400);
     if (!categoryId) throw new AppError("VALIDATION", "category is required", 400);
-    if (!body.purchasePrice || Number(body.purchasePrice) < 0) throw new AppError("VALIDATION", "Purchase / Cost Price is required", 400);
-    if (!body.wholesalePrice || Number(body.wholesalePrice) < 0) throw new AppError("VALIDATION", "Wholesale Price is required", 400);
-    if (!body.retailPrice || Number(body.retailPrice) < 0) throw new AppError("VALIDATION", "Retail Price is required", 400);
+    // VARIABLE products carry pricing on each variant — main-level prices are optional.
+    const reqType = String(body.type ?? "SIMPLE").toUpperCase();
+    const reqIsVariable = reqType === "VARIABLE";
+    if (!reqIsVariable) {
+      if (!body.purchasePrice || Number(body.purchasePrice) < 0) throw new AppError("VALIDATION", "Purchase / Cost Price is required", 400);
+      if (!body.wholesalePrice || Number(body.wholesalePrice) < 0) throw new AppError("VALIDATION", "Wholesale Price is required", 400);
+      if (!body.retailPrice || Number(body.retailPrice) < 0) throw new AppError("VALIDATION", "Retail Price is required", 400);
+    }
     const cat = await catalogRepository.findCategory(ctx.tenantId!, categoryId);
     if (!cat) throw new AppError("VALIDATION", "Category not found", 400);
     if (body.subcategoryId) {
@@ -310,10 +315,10 @@ export const catalogProductsService = {
 
     const defaults: VariantInput = {
       price: calcFinalSellingPrice(body.retailPrice, body.discount),
-      cost: String((body.purchasePrice as string | undefined) ?? (body.cost as string | undefined) ?? 0),
+      cost: String((body.purchasePrice as string | undefined) || (body.cost as string | undefined) || 0),
       discount: String(body.discount ?? 0),
-      wholesalePrice: body.wholesalePrice != null ? String(body.wholesalePrice) : undefined,
-      retailPrice: body.retailPrice != null ? String(body.retailPrice) : undefined,
+      wholesalePrice: body.wholesalePrice != null && body.wholesalePrice !== "" ? String(body.wholesalePrice) : undefined,
+      retailPrice: body.retailPrice != null && body.retailPrice !== "" ? String(body.retailPrice) : undefined,
       minStock: String(body.minStock ?? 0),
       sku: body.code as string,
       barcode: body.barcode as string | undefined,
@@ -387,9 +392,9 @@ export const catalogProductsService = {
       const sub = await catalogRepository.findSubcategoryInCategory(ctx.tenantId!, String(body.subcategoryId), categoryId);
       if (!sub) throw new AppError("VALIDATION", "Subcategory does not belong to the selected category", 400);
     }
-    if (body.purchasePrice != null && (Number(body.purchasePrice) < 0 || !body.purchasePrice)) throw new AppError("VALIDATION", "Purchase / Cost Price is required", 400);
-    if (body.wholesalePrice != null && (Number(body.wholesalePrice) < 0 || !body.wholesalePrice)) throw new AppError("VALIDATION", "Wholesale Price is required", 400);
-    if (body.retailPrice != null && (Number(body.retailPrice) < 0 || !body.retailPrice)) throw new AppError("VALIDATION", "Retail Price is required", 400);
+    if (body.purchasePrice != null && body.purchasePrice !== "" && Number(body.purchasePrice) < 0) throw new AppError("VALIDATION", "Purchase / Cost Price is required", 400);
+    if (body.wholesalePrice != null && body.wholesalePrice !== "" && Number(body.wholesalePrice) < 0) throw new AppError("VALIDATION", "Wholesale Price is required", 400);
+    if (body.retailPrice != null && body.retailPrice !== "" && Number(body.retailPrice) < 0) throw new AppError("VALIDATION", "Retail Price is required", 400);
     const data = productPayload(body, { category: category ?? existing.category });
     const product = await catalogRepository.updateProduct(existing.id, {
       ...Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined)),
@@ -454,6 +459,8 @@ export const catalogProductsService = {
             sku: nextSku,
             ...(row.price !== undefined ? { price: String(row.price) } : {}),
             ...(row.cost !== undefined ? { cost: String(row.cost) } : {}),
+            ...(row.wholesalePrice !== undefined ? { wholesalePrice: row.wholesalePrice === "" || row.wholesalePrice == null ? null : String(row.wholesalePrice) } : {}),
+            ...(row.retailPrice !== undefined ? { retailPrice: row.retailPrice === "" || row.retailPrice == null ? null : String(row.retailPrice) } : {}),
             ...(row.discount !== undefined ? { discount: String(row.discount) } : {}),
             ...(row.minStock !== undefined ? { minStock: String(row.minStock) } : {}),
             ...(row.weight !== undefined ? { weight: row.weight === "" || row.weight == null ? null : String(row.weight) } : {}),

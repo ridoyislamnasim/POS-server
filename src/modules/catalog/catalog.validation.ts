@@ -59,13 +59,33 @@ export const createProductSchema = z.object({
   name: z.string().min(1, "name and code required"),
   code: z.string().min(1, "name and code required"),
   categoryId: z.string().min(1, "category is required"),
+  type: z.string().optional(),
   sellingPrice: z.union([z.string(), z.number()]).optional(),
-  purchasePrice: positiveDecimal,
-  wholesalePrice: positiveDecimal,
-  retailPrice: positiveDecimal,
+  purchasePrice: z.union([z.string(), z.number()]).optional(),
+  wholesalePrice: z.union([z.string(), z.number()]).optional(),
+  retailPrice: z.union([z.string(), z.number()]).optional(),
   discount: discountPercent.optional().default("0"),
   profitMargin: z.union([z.string(), z.number()]).optional(),
-}).passthrough();
+}).passthrough().superRefine((val, ctx) => {
+  // VARIABLE products carry pricing on each variant — main-level prices are optional.
+  const t = String((val as { type?: unknown }).type ?? "SIMPLE").toUpperCase();
+  const isVariable = t === "VARIABLE";
+  const checks = [
+    { key: "purchasePrice", label: "Purchase / Cost Price" },
+    { key: "wholesalePrice", label: "Wholesale Price" },
+    { key: "retailPrice", label: "Retail Price" },
+  ] as const;
+  for (const { key, label } of checks) {
+    const raw = (val as Record<string, unknown>)[key];
+    const s = raw == null ? "" : String(raw).trim();
+    const invalid = s === "" || isNaN(Number(s)) || Number(s) < 0;
+    if (!isVariable && invalid) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `${label} is required` });
+    } else if (isVariable && s !== "" && (isNaN(Number(s)) || Number(s) < 0)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `${label} must be a non-negative number` });
+    }
+  }
+});
 
 export const updateProductSchema = z.object({
   sellingPrice: z.union([z.string(), z.number()]).optional(),
