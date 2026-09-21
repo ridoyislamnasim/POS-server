@@ -3,6 +3,7 @@ import { paginationMeta, parseListQuery } from "../../lib/list-query.js";
 import type { RequestContext } from "../../types.js";
 import { reportsRepository } from "./reports.repository.js";
 import type { ReportRange } from "./reports.types.js";
+import { computeProfit } from "../finance/profit.js";
 
 function range(ctx: RequestContext, query: Record<string, unknown>): ReportRange {
   const from = String(query.from ?? ctx.businessDate);
@@ -123,18 +124,21 @@ export const reportsService = {
         stockValue: money(num(valueAgg[0]?.value)),
         availableValue: money(num(valueAgg[0]?.available)),
         damagedValue: money(num(valueAgg[0]?.damaged)),
-        rows: rows.map((s) => ({
-          sku: s.variant.sku,
-          product: s.variant.product.name,
-          location: s.location.name,
-          available: money(num(s.quantity) - num(s.reservedQuantity)),
-          reserved: money(num(s.reservedQuantity)),
-          damaged: money(num(s.damagedQuantity)),
-          quarantine: money(num(s.quarantineQuantity)),
-          physical: money(num(s.quantity) + num(s.damagedQuantity) + num(s.quarantineQuantity)),
-          cost: money(num(s.variant.cost)),
-          value: money((num(s.quantity) - num(s.reservedQuantity)) * num(s.variant.cost)),
-        })),
+        rows: rows.map((s) => {
+          const unitCost = num((s as unknown as { unitCost: unknown }).unitCost) !== 0 ? num((s as unknown as { unitCost: unknown }).unitCost) : num(s.variant.cost);
+          return {
+            sku: s.variant.sku,
+            product: s.variant.product.name,
+            location: s.location.name,
+            available: money(num(s.quantity) - num(s.reservedQuantity)),
+            reserved: money(num(s.reservedQuantity)),
+            damaged: money(num(s.damagedQuantity)),
+            quarantine: money(num(s.quarantineQuantity)),
+            physical: money(num(s.quantity) + num(s.damagedQuantity) + num(s.quarantineQuantity)),
+            cost: money(unitCost),
+            value: money((num(s.quantity) - num(s.reservedQuantity)) * unitCost),
+          };
+        }),
       },
       pagination: paginationMeta(total, list.page, list.limit),
     };
@@ -142,32 +146,17 @@ export const reportsService = {
 
   async profit(ctx: RequestContext, query: Record<string, unknown>) {
     const r = range(ctx, query);
-    const sales = await reportsRepository.salesWithItems({
-      tenantId: tenantId(ctx),
-      ...branchScope(ctx),
-      businessDate: { gte: r.gte, lte: r.lte },
-      status: { in: ["COMPLETED", "PARTIALLY_RETURNED"] },
-    });
-    const expenses = await reportsRepository.expenseTotal({
-      tenantId: tenantId(ctx),
-      ...branchScope(ctx),
-      businessDate: { gte: r.gte, lte: r.lte },
-      status: "POSTED",
-    });
-    const variantIds = [...new Set(sales.flatMap((s) => s.items.map((i) => i.variantId)))];
-    const costs = await reportsRepository.variantCosts(variantIds);
-    const costMap = new Map(costs.map((c) => [c.id, num(c.cost)]));
-    let cogs = 0;
-    for (const s of sales) for (const i of s.items) cogs += num(i.qty) * (costMap.get(i.variantId) ?? 0);
-    const revenue = sales.reduce((n, s) => n + num(s.total), 0);
+    // Unified — same as P&L/dashboard (net revenue/cogs via returns + exchange, expenses POSTED, otherIncome included)
+    const p = await computeProfit(ctx, r.from, r.to);
     return {
-      from: r.from,
-      to: r.to,
-      revenue: money(revenue),
-      cogs: money(cogs),
-      gross: money(revenue - cogs),
-      expenses: money(num(expenses._sum.amount)),
-      net: money(revenue - cogs - num(expenses._sum.amount)),
+      from: p.from,
+      to: p.to,
+      revenue: p.revenue,
+      cogs: p.cogs,
+      gross: p.grossProfit,
+      expenses: p.expenses,
+      // Historically report net excluded otherIncome; now unified to netProfit (includes otherIncome) for consistency.
+      net: p.netProfit,
     };
   },
 

@@ -4,6 +4,7 @@ import { requireTenantId } from "../../lib/scope.js";
 import { branchScope, money, num } from "../../lib/erp.js";
 import { stockRepository } from "../inventory/stock.repository.js";
 import type { RequestContext } from "../../types.js";
+import { computeProfit } from "../finance/profit.js";
 
 const LOW_STOCK_FALLBACK = 5;
 const TOP_LIMIT = 8;
@@ -81,7 +82,7 @@ export async function dashboardSummary(ctx: RequestContext, from: string, to: st
     ...branchScope(ctx),
   };
 
-  const [totals, returnsCount, customerCountRows, profitRows, branches, expenses, customerDue, supplierDue, refunds, allowedLocs, threshold] =
+  const [totals, returnsCount, customerCountRows, _profitRows, branches, expenses, customerDue, supplierDue, refunds, allowedLocs, threshold] =
     await Promise.all([
       prisma.sale.aggregate({
         where,
@@ -105,17 +106,7 @@ export async function dashboardSummary(ctx: RequestContext, from: string, to: st
           AND s."customerId" IS NOT NULL
           ${sqlBranch(ctx)}
       `,
-      prisma.$queryRaw<[{ profit: unknown }]>`
-        SELECT COALESCE(SUM(si."lineTotal" - si.qty * COALESCE(pv.cost, 0)), 0) AS profit
-        FROM "SaleItem" si
-        INNER JOIN "Sale" s ON s.id = si."saleId"
-        LEFT JOIN "ProductVariant" pv ON pv.id = si."variantId"
-        WHERE s."tenantId" = ${tenantId}
-          AND s."businessDate" >= ${from}::date
-          AND s."businessDate" <= ${to}::date
-          AND ${SQL_SALE_DONE}
-          ${sqlBranch(ctx)}
-      `,
+      Promise.resolve([{ profit: 0 }] as [{ profit: unknown }]),
       prisma.branch.count({
         where: {
           tenantId,
@@ -158,8 +149,10 @@ export async function dashboardSummary(ctx: RequestContext, from: string, to: st
     : [{ value: 0, low: 0, out: 0, total: 0 }];
 
   const stock = stockRows[0] ?? { value: 0, low: 0, out: 0, total: 0 };
-  const revenue = num(totals._sum.total);
-  const profit = num(profitRows[0]?.profit);
+  // Unified profit — net of returns + exchange, historical cost via variant cost (limitation documented in profit.ts)
+  const unified = await computeProfit(ctx, from, to);
+  const revenue = unified._raw.netRevenue;
+  const profit = unified._raw.grossProfit;
   const due = num(customerDue._sum.creditDue);
   const lowStockItems = stock.low + stock.out;
   const orders = totals._count;

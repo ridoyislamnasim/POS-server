@@ -90,7 +90,8 @@ export const stockRepository = {
       reservedQuantity: row.reservedQuantity,
       damagedQuantity: row.damagedQuantity,
       quarantineQuantity: row.quarantineQuantity,
-      unitCost: row.variant.cost,
+      // Prefer weighted Stock.unitCost, fallback to ProductVariant.cost (0 means unknown, not true zero)
+      unitCost: row.unitCost != null && Number(row.unitCost) !== 0 ? row.unitCost : row.variant.cost,
     });
     const variantLabel = row.variant.attributes.map((a) => a.option.label).join(" / ");
     const reorder = Number(row.reorderLevel ?? 0);
@@ -210,6 +211,7 @@ export const stockRepository = {
           reservedQuantity: s.reservedQuantity,
           damagedQuantity: s.damagedQuantity,
           quarantineQuantity: s.quarantineQuantity,
+          unitCost: (s as unknown as { unitCost: unknown }).unitCost as never,
           variantId: s.variantId,
           locationId: s.locationId,
           variant: {

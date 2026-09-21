@@ -76,9 +76,9 @@ export const reportsRepository = {
   stockValue(tenantId: string) {
     return prisma.$queryRaw<[{ value: string | null; available: string | null; damaged: string | null }]>`
       SELECT
-        COALESCE(SUM(s.quantity * v.cost), 0)::text AS value,
-        COALESCE(SUM((s.quantity - s."reservedQuantity") * v.cost), 0)::text AS available,
-        COALESCE(SUM(s."damagedQuantity" * v.cost), 0)::text AS damaged
+        COALESCE(SUM(s.quantity * COALESCE(NULLIF(s."unitCost", 0), v.cost, 0)), 0)::text AS value,
+        COALESCE(SUM((s.quantity - s."reservedQuantity") * COALESCE(NULLIF(s."unitCost", 0), v.cost, 0)), 0)::text AS available,
+        COALESCE(SUM(s."damagedQuantity" * COALESCE(NULLIF(s."unitCost", 0), v.cost, 0)), 0)::text AS damaged
       FROM "Stock" s
       JOIN "ProductVariant" v ON v.id = s."variantId"
       WHERE s."tenantId" = ${tenantId}

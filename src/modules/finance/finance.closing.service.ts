@@ -1,5 +1,5 @@
 import { branchScope, money, num, tenantId } from "../../lib/erp.js";
-import { dateRange, parseListQuery, scopedBranchId, withPagination } from "../../lib/list-query.js";
+import { acceptDate, dateRange, parseListQuery, scopedBranchId, withPagination } from "../../lib/list-query.js";
 import { prisma } from "../../lib/prisma.js";
 import { assertBranch } from "../../lib/scope.js";
 import { AppError } from "../../utils/errors.js";
@@ -7,6 +7,7 @@ import type { RequestContext } from "../../types.js";
 import { enqueueOutbox } from "../outbox/enqueue.js";
 import { financeRepository } from "./finance.repository.js";
 import type { CreateDailyClosingInput, ReportRangeQuery } from "./finance.types.js";
+import { computeProfit } from "./profit.js";
 
 /**
  * Finance reporting + daily-closing logic, split from `finance.service.ts`
@@ -17,7 +18,8 @@ export const financeClosingService = {
   async cashFlow(ctx: RequestContext, query: ReportRangeQuery) {
     const from = String(query.from ?? ctx.businessDate);
     const to = String(query.to ?? ctx.businessDate);
-    const range = { gte: new Date(from), lte: new Date(to) };
+    const _range = dateRange(acceptDate(from), acceptDate(to));
+    const range = _range?.gte && _range?.lte ? { gte: _range.gte, lte: _range.lte } : { gte: new Date(from), lte: new Date(new Date(to).setHours(23, 59, 59, 999)) };
     const tid = tenantId(ctx);
     const scope = branchScope(ctx);
     const [sales, expenses, incomes, pays] = await Promise.all([
@@ -50,40 +52,19 @@ export const financeClosingService = {
   async profitLoss(ctx: RequestContext, query: ReportRangeQuery) {
     const from = String(query.from ?? ctx.businessDate);
     const to = String(query.to ?? ctx.businessDate);
-    const range = { gte: new Date(from), lte: new Date(to) };
-    const tid = tenantId(ctx);
-    const [sales, expenses, incomes] = await Promise.all([
-      financeRepository.salesForRange(tid, branchScope(ctx), range, ["COMPLETED", "PARTIALLY_RETURNED", "FULLY_RETURNED"]),
-      financeRepository.expensesForRange(tid, branchScope(ctx), range, "POSTED"),
-      financeRepository.incomeForRange(tid, branchScope(ctx), range),
-    ]);
-    const variantIds = [...new Set(sales.flatMap((s) => s.items.map((i) => i.variantId)))];
-    const costs = await financeRepository.variantCosts(tid, variantIds);
-    const costMap = new Map(costs.map((c) => [c.id, num(c.cost)]));
-    let cogs = 0;
-    for (const s of sales) for (const i of s.items) cogs += num(i.qty) * (costMap.get(i.variantId) ?? 0);
-    const revenue = sales.reduce((n, s) => n + num(s.total), 0);
-    const tax = sales.reduce((n, s) => n + num(s.tax), 0);
-    const otherIncome = incomes.reduce((n, r) => n + num(r.amount), 0);
-    const expenseTotal = expenses.reduce((n, r) => n + num(r.amount), 0);
-    const gross = revenue - cogs;
-    const net = gross + otherIncome - expenseTotal;
-    const byCat: Record<string, number> = {};
-    for (const e of expenses) {
-      const k = e.category.name;
-      byCat[k] = (byCat[k] ?? 0) + num(e.amount);
-    }
+    // Unified calculation — return ≠ damage ≠ adjustment, historical COGS via variant cost snapshot limitation noted in profit.ts
+    const p = await computeProfit(ctx, from, to);
     return {
-      from,
-      to,
-      revenue: money(revenue),
-      cogs: money(cogs),
-      grossProfit: money(gross),
-      tax: money(tax),
-      otherIncome: money(otherIncome),
-      expenses: money(expenseTotal),
-      netProfit: money(net),
-      expenseBreakdown: Object.entries(byCat).map(([category, amount]) => ({ category, amount: money(amount) })),
+      from: p.from,
+      to: p.to,
+      revenue: p.revenue,
+      cogs: p.cogs,
+      grossProfit: p.grossProfit,
+      tax: p.tax,
+      otherIncome: p.otherIncome,
+      expenses: p.expenses,
+      netProfit: p.netProfit,
+      expenseBreakdown: p.expenseBreakdown,
     };
   },
 

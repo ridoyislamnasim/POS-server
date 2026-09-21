@@ -308,8 +308,8 @@ async function postReturn(
   },
 ) {
   const allowNegative = input.sale.branch.negativeStockPolicy !== "BLOCK";
-  const availableLines = [];
-  const damagedLines = [];
+  const availableLines: Array<typeof input.computed[number] & { cost: Prisma.Decimal }> = [];
+  const damagedLines: Array<typeof input.computed[number] & { cost: Prisma.Decimal }> = [];
   for (const line of input.computed) {
     const variant = await tx.productVariant.findFirst({
       where: { id: line.variantId, tenantId: input.tenantId },
@@ -329,8 +329,9 @@ async function postReturn(
       unitCost: variant?.cost,
     });
     const disp = dispositionFor(line.condition);
-    if (disp === "AVAILABLE" && line.restock) availableLines.push(line);
-    if (disp === "DAMAGED") damagedLines.push(line);
+    const cost = variant?.cost ?? d(0);
+    if (disp === "AVAILABLE" && line.restock) availableLines.push({ ...line, cost });
+    if (disp === "DAMAGED") damagedLines.push({ ...line, cost });
   }
   for (const ex of input.exchanges) {
     await deductStock(tx, {
@@ -347,7 +348,7 @@ async function postReturn(
 
   if (availableLines.length) {
     const totalQty = availableLines.reduce((n, l) => n.plus(l.qty), d(0));
-    const totalCost = availableLines.reduce((n, l) => n.plus(l.qty.mul(l.unitPrice)), d(0));
+    const totalCost = availableLines.reduce((n, l) => n.plus(l.qty.mul(l.cost)), d(0));
     const existing = await tx.stockReceipt.findFirst({
       where: { tenantId: input.tenantId, kind: "CUSTOMER_RETURN", sourceRef: input.ret.id },
     });
@@ -374,8 +375,8 @@ async function postReturn(
             create: availableLines.map((l) => ({
               variantId: l.variantId,
               qty: l.qty,
-              unitCost: l.unitPrice,
-              lineCost: l.qty.mul(l.unitPrice),
+              unitCost: l.cost,
+              lineCost: l.qty.mul(l.cost),
             })),
           },
         },
@@ -391,7 +392,7 @@ async function postReturn(
       const header = await tx.saleReturn.findUniqueOrThrow({ where: { id: input.ret.id } });
       const number = await nextDocNumberTx(tx, input.tenantId, header.branchId, "DMG", "DMG");
       const totalQty = damagedLines.reduce((n, l) => n.plus(l.qty), d(0));
-      const totalCost = damagedLines.reduce((n, l) => n.plus(l.qty.mul(l.unitPrice)), d(0));
+      const totalCost = damagedLines.reduce((n, l) => n.plus(l.qty.mul(l.cost)), d(0));
       await tx.stockDamage.create({
         data: {
           tenantId: input.tenantId,
@@ -412,8 +413,8 @@ async function postReturn(
             create: damagedLines.map((l) => ({
               variantId: l.variantId,
               qty: l.qty,
-              unitCost: l.unitPrice,
-              lineCost: l.qty.mul(l.unitPrice),
+              unitCost: l.cost,
+              lineCost: l.qty.mul(l.cost),
             })),
           },
         },
