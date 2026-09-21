@@ -469,17 +469,28 @@ jobs:
 
           echo "Regenerating Prisma Client..."
 
-          rm -rf node_modules/.prisma
+          echo "Regenerating Prisma Client..."
 
           ./node_modules/.bin/prisma generate
 
-          test -d node_modules/.prisma/client || {
-            echo "::error::Generated Prisma Client is missing"
-            exit 1
+          echo "Verifying generated Prisma Client..."
+
+          node --input-type=module <<'NODE'
+          import { PrismaClient } from "@prisma/client";
+
+          const prisma = new PrismaClient();
+
+          try {
+              await prisma.$disconnect();
+              console.log("Prisma Client runtime import: OK");
+          } catch (error) {
+              console.error("Prisma Client runtime verification failed:");
+              console.error(error);
+              process.exit(1);
           }
+          NODE
 
-          echo "Prisma Client generated successfully."
-
+          echo "Prisma Client generated and verified successfully."
           # ------------------------------------------------------
           # Database migrations
           #
