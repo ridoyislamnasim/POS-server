@@ -13,9 +13,6 @@
     "db:migrate": "prisma migrate dev",
     "test": "vitest run"
   },
-  "prisma": {
-    "schema": "prisma/schema"
-  },
   "dependencies": {
     "@prisma/client": "^6.5.0",
     "bcryptjs": "^3.0.2",
@@ -50,5 +47,6 @@
       "esbuild",
       "prisma"
     ]
-  }
+  },
+  "packageManager": "pnpm@9.15.9"
 }
