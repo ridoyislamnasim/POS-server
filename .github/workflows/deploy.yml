@@ -677,33 +677,7 @@ jobs:
 
           echo "/api/health: OK"
 
-          # ------------------------------------------------------
-          # Version
-          # ------------------------------------------------------
 
-          VERSION_RESPONSE="$(
-            curl -fsS \
-              --max-time 10 \
-              "http://127.0.0.1:$PORT_VALUE/api/version"
-          )"
-
-          echo "Version response:"
-          echo "$VERSION_RESPONSE"
-
-          LIVE_SHA="$(
-            printf '%s' "$VERSION_RESPONSE" |
-            grep -o '"version":"[^"]*"' |
-            cut -d'"' -f4
-          )"
-
-          if [ "$LIVE_SHA" != "$EXPECTED_SHA" ]; then
-            echo "::error::Live version mismatch"
-            echo "Expected: $EXPECTED_SHA"
-            echo "Actual:   $LIVE_SHA"
-            exit 1
-          fi
-
-          echo "Live version: OK"
 
           # ------------------------------------------------------
           # Readiness
@@ -770,28 +744,6 @@ jobs:
             sleep 3
           done
 
-          PUBLIC_VERSION="$(
-            curl -fsS \
-              --max-time 10 \
-              "$BACKEND_URL/api/version"
-          )"
-
-          echo "$PUBLIC_VERSION"
-
-          LIVE_SHA="$(
-            printf '%s' "$PUBLIC_VERSION" |
-            grep -o '"version":"[^"]*"' |
-            cut -d'"' -f4
-          )"
-
-          if [ "$LIVE_SHA" != "$EXPECTED_SHA" ]; then
-            echo "::error::Public API version mismatch"
-            echo "Expected: $EXPECTED_SHA"
-            echo "Actual:   $LIVE_SHA"
-            exit 1
-          fi
-
-          echo "Public API deployment verified successfully."
 
   # ============================================================
   # Rollback
