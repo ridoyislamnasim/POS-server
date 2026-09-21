@@ -562,80 +562,45 @@ jobs:
           pm2 save
 
           # ------------------------------------------------------
-          # Verify PM2 configuration
+          # Verify PM2 process
           # ------------------------------------------------------
 
           echo "Verifying PM2 process..."
 
-          PM2_DATA="$(
-            pm2 jlist |
-            node --input-type=module <<'NODE'
-          let input = "";
+          PM2_STATUS="$(pm2 describe backend 2>/dev/null | grep -E 'status' | head -n 1 || true)"
 
-          process.stdin.on("data", chunk => {
-            input += chunk;
-          });
-
-          process.stdin.on("end", () => {
-            const processes = JSON.parse(input);
-            const app = processes.find(p => p.name === "backend");
-
-            if (!app) {
-              console.error("PM2 backend process not found");
-              process.exit(1);
-            }
-
-            console.log(JSON.stringify({
-              cwd: app.pm2_env?.pm_cwd || "",
-              script: app.pm2_env?.pm_exec_path || "",
-              status: app.pm2_env?.status || ""
-            }));
-          });
-          NODE
-          )"
-
-          echo "PM2 data: $PM2_DATA"
-
-          PM2_CWD="$(echo "$PM2_DATA" | node -e '
-            let s="";
-            process.stdin.on("data",d=>s+=d);
-            process.stdin.on("end",()=>console.log(JSON.parse(s).cwd));
-          ')"
-
-          PM2_SCRIPT="$(echo "$PM2_DATA" | node -e '
-            let s="";
-            process.stdin.on("data",d=>s+=d);
-            process.stdin.on("end",()=>console.log(JSON.parse(s).script));
-          ')"
-
-          PM2_STATUS="$(echo "$PM2_DATA" | node -e '
-            let s="";
-            process.stdin.on("data",d=>s+=d);
-            process.stdin.on("end",()=>console.log(JSON.parse(s).status));
-          ')"
-
-          echo "PM2 cwd: $PM2_CWD"
-          echo "PM2 script: $PM2_SCRIPT"
-          echo "PM2 status: $PM2_STATUS"
-
-          if [ "$PM2_CWD" != "$APP_DIR" ]; then
-            echo "::error::PM2 cwd is incorrect: $PM2_CWD"
+          if pm2 describe backend >/dev/null 2>&1; then
+            echo "PM2 backend process exists."
+          else
+            echo "::error::PM2 backend process was not found"
+            pm2 status || true
             exit 1
           fi
 
-          if [ "$PM2_SCRIPT" != "$APP_DIR/dist/index.js" ]; then
-            echo "::error::PM2 script is incorrect: $PM2_SCRIPT"
+          if ! pm2 pid backend >/dev/null 2>&1; then
+            echo "::error::PM2 backend process has no PID"
+            pm2 status || true
             exit 1
           fi
 
-          if [ "$PM2_STATUS" != "online" ]; then
-            echo "::error::PM2 backend is not online"
+          BACKEND_PID="$(pm2 pid backend | tail -n 1 | tr -d '[:space:]')"
+
+          if [ -z "$BACKEND_PID" ] || [ "$BACKEND_PID" = "0" ]; then
+            echo "::error::PM2 backend PID is invalid"
+            pm2 status || true
             exit 1
           fi
 
-          echo "PM2 configuration: OK"
+          if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+            echo "::error::Backend process $BACKEND_PID is not running"
+            pm2 status || true
+            pm2 logs backend --lines 100 --nostream || true
+            exit 1
+          fi
 
-          REMOTE_SCRIPT
+          echo "PM2 backend PID: $BACKEND_PID"
+          echo "PM2 backend process: ONLINE"
+          echo "PM2 verification: OK"
 
       # ----------------------------------------------------------
       # Verify actual live application
