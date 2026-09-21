@@ -3,28 +3,32 @@ name: Backend CI/CD
 on:
   push:
     branches: [main, develop]
+
   pull_request:
     branches: [main, develop]
+
   workflow_dispatch:
     inputs:
       environment:
         description: "Deploy environment"
         required: true
-        default: "staging"
+        default: staging
         type: choice
         options:
           - staging
           - production
+
       force_rollback:
-        description: "Force rollback to previous version"
+        description: "Rollback to the previous application version"
         required: false
-        type: boolean
         default: false
+        type: boolean
+
   release:
     types: [published]
 
 concurrency:
-  group: backend-cicd-${{ github.ref }}-${{ github.event_name }}-${{ github.event.inputs.environment }}
+  group: backend-cicd-${{ github.ref }}-${{ github.event_name }}-${{ inputs.environment || 'auto' }}
   cancel-in-progress: true
 
 env:
@@ -32,51 +36,56 @@ env:
   PNPM_VERSION: "9"
 
 jobs:
-  # ── Resolve target environment ──────────────────────────────
+  # ============================================================
+  # Resolve environment
+  # ============================================================
   resolve-env:
     runs-on: ubuntu-latest
-    outputs:
-      environment: ${{ steps.env.outputs.value }}
-      web_origin: ${{ steps.env.outputs.web_origin }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
+    outputs:
+      environment: ${{ steps.resolve.outputs.environment }}
+      web_origin: ${{ steps.resolve.outputs.web_origin }}
+
+    steps:
       - name: Resolve environment
-        id: env
+        id: resolve
+        shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF: ${{ github.ref }}
           INPUT_ENVIRONMENT: ${{ inputs.environment }}
         run: |
+          set -euo pipefail
+
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            ENV="$INPUT_ENVIRONMENT"
+            ENVIRONMENT="$INPUT_ENVIRONMENT"
           elif [ "$EVENT_NAME" = "release" ]; then
-            ENV="production"
+            ENVIRONMENT="production"
           elif [ "$REF" = "refs/heads/main" ]; then
-            ENV="production"
+            ENVIRONMENT="production"
           elif [ "$REF" = "refs/heads/develop" ]; then
-            ENV="staging"
+            ENVIRONMENT="staging"
           else
-            ENV="staging"
+            ENVIRONMENT="staging"
           fi
 
-          echo "value=$ENV" >> "$GITHUB_OUTPUT"
+          echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
 
-          if [ "$ENV" = "production" ]; then
+          if [ "$ENVIRONMENT" = "production" ]; then
             echo "web_origin=http://localhost:3020,https://shohojhisab.com,https://mobile.shohojhisab.com" >> "$GITHUB_OUTPUT"
           else
             echo "web_origin=http://localhost:3020" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Debug resolved environment
-        run: |
-          echo "Environment: ${{ steps.env.outputs.value }}"
+          echo "Resolved environment: $ENVIRONMENT"
 
-  # ── Test ──────────────────────────────────────────────────
+  # ============================================================
+  # Test
+  # ============================================================
   test:
-    needs: [resolve-env]
+    needs: resolve-env
     runs-on: ubuntu-latest
+
     services:
       postgres:
         image: postgres:16-alpine
@@ -91,6 +100,7 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -105,26 +115,28 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
 
-      - name: Verify pnpm
+      - name: Verify toolchain
         run: |
           node --version
           pnpm --version
-          pwd
-          ls -la
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Prisma generate
+        run: pnpm exec prisma generate
         env:
           DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
 
-      - name: Prisma generate
-        run: pnpm db:generate
+      - name: Prisma validate
+        run: pnpm exec prisma validate
         env:
           DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
 
       - name: Prisma migrate
-        run: pnpm prisma migrate deploy
+        run: pnpm exec prisma migrate deploy
         env:
           DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
 
@@ -136,16 +148,19 @@ jobs:
         env:
           DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
           WEB_ORIGIN: ${{ needs.resolve-env.outputs.web_origin }}
-          ALLOW_PLATFORM_BOOTSTRAP: 1
+          ALLOW_PLATFORM_BOOTSTRAP: "1"
           PLATFORM_BOOTSTRAP_TOKEN: ${{ secrets.PLATFORM_BOOTSTRAP_TOKEN }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
           NODE_ENV: test
 
-  # ── Lint ──────────────────────────────────────────────────
+  # ============================================================
+  # Lint
+  # ============================================================
   lint:
-    needs: [resolve-env]
+    needs: resolve-env
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -160,6 +175,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -167,10 +183,13 @@ jobs:
       - name: Type check
         run: pnpm exec tsc --noEmit
 
-  # ── Build ─────────────────────────────────────────────────
+  # ============================================================
+  # Build
+  # ============================================================
   build:
     needs: [resolve-env, test, lint]
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -185,379 +204,778 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-        env:
-          DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
 
-      - name: Bake build info
+      - name: Create build metadata
+        shell: bash
         run: |
+          set -euo pipefail
+
           mkdir -p src/generated
-          printf 'export const BUILD_SHA = "%s";\nexport const BUILD_TIME = "%s";\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > src/generated/build-info.ts
+
+          cat > src/generated/build-info.ts <<EOF
+          export const BUILD_SHA = "${GITHUB_SHA}";
+          export const BUILD_TIME = "$(date -u +%FT%TZ)";
+          EOF
+
           cat src/generated/build-info.ts
 
       - name: Build
         run: pnpm build
-        env:
-          DATABASE_URL: postgresql://pos:pos123@localhost:5432/pos?schema=public
 
-      - name: Upload build artifact
+      - name: Upload deployment artifact
         uses: actions/upload-artifact@v4
         with:
-          name: backend-dist-${{ needs.resolve-env.outputs.environment }}
+          name: backend-${{ github.sha }}
           path: |
             dist/
             prisma/
             package.json
             pnpm-lock.yaml
+          if-no-files-found: error
           retention-days: 14
 
-  # ── Deploy to DigitalOcean via SSH ────────────────────────
+  # ============================================================
+  # Deploy
+  #
+  # IMPORTANT:
+  # workflow_dispatch + force_rollback=true
+  # will NOT deploy.
+  # ============================================================
   deploy:
-    needs: [resolve-env, build, test]
+    needs: [resolve-env, build]
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || github.event_name == 'release'
+
+    if: >
+      github.event_name != 'pull_request' &&
+      !(
+        github.event_name == 'workflow_dispatch' &&
+        inputs.force_rollback == true
+      ) &&
+      (
+        github.ref == 'refs/heads/main' ||
+        github.ref == 'refs/heads/develop' ||
+        github.event_name == 'release' ||
+        github.event_name == 'workflow_dispatch'
+      )
+
     environment: ${{ needs.resolve-env.outputs.environment }}
+
     steps:
-      - name: Download build artifact
+      # ----------------------------------------------------------
+      # Download artifact
+      # ----------------------------------------------------------
+      - name: Download deployment artifact
         uses: actions/download-artifact@v4
         with:
-          name: backend-dist-${{ needs.resolve-env.outputs.environment }}
-          path: artifact/
+          name: backend-${{ github.sha }}
+          path: artifact
 
-      - name: Configure SSH for DigitalOcean
+      # ----------------------------------------------------------
+      # SSH
+      # ----------------------------------------------------------
+      - name: Configure SSH
         shell: bash
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
-          DO_PORT: "22"
           DO_USER: ${{ secrets.DO_USER }}
           DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
         run: |
-          test -n "$DO_HOST"  || { echo "::error::DO_HOST is empty"; exit 1; }
-          test -n "$DO_USER"  || { echo "::error::DO_USER is empty"; exit 1; }
-          test -n "$DO_PORT"  || { echo "::error::DO_PORT is empty"; exit 1; }
-          [[ "$DO_PORT" =~ ^[0-9]+$ ]] || { echo "::error::DO_PORT is not numeric: $DO_PORT"; exit 1; }
+          set -euo pipefail
+
+          test -n "$DO_HOST" || {
+            echo "::error::DO_HOST is not configured"
+            exit 1
+          }
+
+          test -n "$DO_USER" || {
+            echo "::error::DO_USER is not configured"
+            exit 1
+          }
+
+          test -n "$DO_SSH_KEY" || {
+            echo "::error::DO_SSH_KEY is not configured"
+            exit 1
+          }
 
           mkdir -p ~/.ssh
+
           printf '%s\n' "$DO_SSH_KEY" > ~/.ssh/digitalocean
           chmod 600 ~/.ssh/digitalocean
-          ssh-keygen -R "$DO_HOST" 2>/dev/null || true
-          ssh-keyscan -p "$DO_PORT" "$DO_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-          echo "SSH configured: host=$DO_HOST user=$DO_USER port=$DO_PORT"
+          ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Backup current version on server
+      # ----------------------------------------------------------
+      # Backup current application
+      # ----------------------------------------------------------
+      - name: Backup current application
         shell: bash
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
-          DO_PORT: "22"
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" '
-            set -e
-            cd ~/pos/POS-server
-            if [ -d dist ]; then
-              TS="$(date -u +%Y%m%d-%H%M%S)"
-              mv dist "dist.backup-$TS"
-              echo "Backed up current dist to dist.backup-$TS"
-              ls -dt dist.backup-* 2>/dev/null | tail -n +4 | xargs -r rm -rf || true
-              echo "Keeping latest 3 backups"
-            fi
-            mkdir -p dist
-          '
+          set -euo pipefail
 
-      - name: Upload backend to DigitalOcean
+          ssh -i ~/.ssh/digitalocean \
+            "$DO_USER@$DO_HOST" '
+              set -euo pipefail
+
+              cd ~/pos/POS-server
+
+              if [ -d dist ]; then
+                TS="$(date -u +%Y%m%d-%H%M%S)"
+
+                mv dist "dist.backup-$TS"
+
+                echo "Created backup: dist.backup-$TS"
+
+                ls -dt dist.backup-* 2>/dev/null |
+                  tail -n +4 |
+                  xargs -r rm -rf
+              fi
+
+              mkdir -p dist
+            '
+
+      # ----------------------------------------------------------
+      # Upload artifact
+      # ----------------------------------------------------------
+      - name: Upload application artifact
         shell: bash
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
-          DO_PORT: "22"
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" "mkdir -p ~/pos/POS-server"
+          set -euo pipefail
+
+          ssh -i ~/.ssh/digitalocean \
+            "$DO_USER@$DO_HOST" \
+            "mkdir -p ~/pos/POS-server"
 
           rsync -az --delete \
-            --exclude='node_modules' \
-            --exclude='.env' \
-            --exclude='.git' \
-            -e "ssh -i ~/.ssh/digitalocean -p $DO_PORT" \
+            --exclude=node_modules \
+            --exclude=.env \
+            --exclude=.git \
+            -e "ssh -i ~/.ssh/digitalocean" \
             artifact/dist/ \
             "$DO_USER@$DO_HOST:~/pos/POS-server/dist/"
 
-          scp -i ~/.ssh/digitalocean -P "$DO_PORT" \
+          scp -i ~/.ssh/digitalocean \
             artifact/package.json \
             artifact/pnpm-lock.yaml \
             "$DO_USER@$DO_HOST:~/pos/POS-server/"
 
-          scp -r -i ~/.ssh/digitalocean -P "$DO_PORT" \
+          scp -r -i ~/.ssh/digitalocean \
             artifact/prisma \
             "$DO_USER@$DO_HOST:~/pos/POS-server/"
 
-      - name: Install production dependencies and restart
+      # ----------------------------------------------------------
+      # Server deployment
+      # ----------------------------------------------------------
+      - name: Install dependencies, migrate DB and restart
         shell: bash
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
-          DO_PORT: "22"
-          DO_USER: ${{ secrets.DO_USER }}
-        run: |
-          ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" '
-            set -e
-            cd ~/pos/POS-server
-
-            LATEST_BACKUP="$(ls -dt dist.backup-* 2>/dev/null | head -n 1 || true)"
-            if [ -z "$LATEST_BACKUP" ] && [ -d dist.backup ]; then LATEST_BACKUP="dist.backup"; fi
-            auto_rollback() {
-              trap - ERR
-              echo "::error::Deploy step failed — restoring previous version"
-              if [ -n "${LATEST_BACKUP:-}" ] && [ -d "$LATEST_BACKUP" ]; then
-                rm -rf dist
-                cp -a "$LATEST_BACKUP" dist
-                echo "WARNING: Prisma migrations applied by this deploy are NOT reverted."
-                echo "If they were not backward-compatible, verify the app or forward-fix."
-                if pm2 describe backend >/dev/null 2>&1; then
-                  pm2 restart backend --update-env || echo "::warning::pm2 restart during auto-recovery failed"
-                fi
-              else
-                echo "::warning::No backup available for auto-recovery"
-              fi
-              exit 1
-            }
-            trap auto_rollback ERR
-
-            corepack enable
-            corepack prepare pnpm@9 --activate
-
-            pnpm install --frozen-lockfile
-
-            echo "Applying pending database migrations..."
-            if [ -d prisma ]; then
-              ./node_modules/.bin/prisma migrate deploy
-              echo "Migrations up to date"
-            else
-              echo "::error::prisma/ directory not found, cannot apply migrations"
-              exit 1
-            fi
-
-            if pm2 describe backend >/dev/null 2>&1; then
-              pm2 restart backend --update-env
-            else
-              pm2 start dist/index.js --name backend --update-env
-            fi
-
-            trap - ERR
-            pm2 save
-
-            echo "--- live process diagnostics ---"
-            echo "deploy dir: $(pwd)"
-            git rev-parse --short HEAD 2>/dev/null || echo "no git repo"
-            pm2 describe backend 2>/dev/null | grep -iE "script path|exec cwd|status" || true
-          '
-
-      - name: Verify live process on server
-        shell: bash
-        env:
-          DO_HOST: ${{ secrets.DO_HOST }}
-          DO_PORT: "22"
           DO_USER: ${{ secrets.DO_USER }}
           EXPECTED_SHA: ${{ github.sha }}
         run: |
-          ssh -i ~/.ssh/digitalocean -p "$DO_PORT" \
+          set -euo pipefail
+
+          ssh -i ~/.ssh/digitalocean \
             "$DO_USER@$DO_HOST" \
-            "EXPECTED_SHA='$EXPECTED_SHA' bash -s" <<'REMOTE_EOF'
-          set -e
-          cd ~/pos/POS-server
+            "EXPECTED_SHA='$EXPECTED_SHA' bash -s" <<'REMOTE_SCRIPT'
 
-          echo "--- tools ---"
-          command -v curl || echo "NO_CURL"
-          command -v ss || echo "NO_SS"
-          command -v node
-          node --version || echo "node version unknown"
+          set -euo pipefail
 
-          echo "--- dist on disk ---"
-          ls -la dist/app.js dist/index.js
-          if grep -q 'api/version' dist/app.js; then
-            echo "dist contains the /api/version route"
+          APP_DIR="$HOME/pos/POS-server"
+
+          cd "$APP_DIR"
+
+          echo "=========================================="
+          echo "ShohojHisab Backend Deployment"
+          echo "=========================================="
+
+          echo "Deploy directory: $APP_DIR"
+          echo "Expected SHA: $EXPECTED_SHA"
+
+          # ------------------------------------------------------
+          # Load environment
+          # ------------------------------------------------------
+
+          if [ ! -f .env ]; then
+            echo "::error::.env file not found"
+            exit 1
+          fi
+
+          set -a
+          . ./.env
+          set +a
+
+          # ------------------------------------------------------
+          # Ensure pnpm
+          # ------------------------------------------------------
+
+          corepack enable
+          corepack prepare pnpm@9 --activate
+
+          echo "Node:"
+          node --version
+
+          echo "pnpm:"
+          pnpm --version
+
+          # ------------------------------------------------------
+          # Install dependencies
+          # ------------------------------------------------------
+
+          echo "Installing dependencies..."
+
+          pnpm install --frozen-lockfile
+
+          # ------------------------------------------------------
+          # Prisma checks
+          # ------------------------------------------------------
+
+          echo "Checking Prisma CLI..."
+
+          test -x ./node_modules/.bin/prisma || {
+            echo "::error::Prisma CLI is not installed"
+            exit 1
+          }
+
+          echo "Prisma CLI:"
+          ./node_modules/.bin/prisma --version
+
+          test -d prisma || {
+            echo "::error::prisma directory missing"
+            exit 1
+          }
+
+          test -d prisma/schema || {
+            echo "::error::prisma/schema directory missing"
+            exit 1
+          }
+
+          echo "Validating Prisma schema..."
+
+          ./node_modules/.bin/prisma validate
+
+          # ------------------------------------------------------
+          # Always regenerate Prisma Client
+          # ------------------------------------------------------
+
+          echo "Regenerating Prisma Client..."
+
+          rm -rf node_modules/.prisma
+
+          ./node_modules/.bin/prisma generate
+
+          test -d node_modules/.prisma/client || {
+            echo "::error::Generated Prisma Client is missing"
+            exit 1
+          }
+
+          echo "Prisma Client generated successfully."
+
+          # ------------------------------------------------------
+          # Database migrations
+          #
+          # NO migration name is hardcoded.
+          # Prisma automatically applies every pending migration.
+          # ------------------------------------------------------
+
+          echo "Running database migrations..."
+
+          ./node_modules/.bin/prisma migrate deploy
+
+          echo "Checking migration status..."
+
+          ./node_modules/.bin/prisma migrate status
+
+          # ------------------------------------------------------
+          # Database + Prisma runtime smoke test
+          # ------------------------------------------------------
+
+          echo "Testing database and Prisma runtime..."
+
+          node --input-type=module <<'NODE'
+          import { PrismaClient } from "@prisma/client";
+
+          const prisma = new PrismaClient();
+
+          try {
+            await prisma.$queryRaw`SELECT 1`;
+
+            console.log("Database connection: OK");
+
+            const result = await prisma.$queryRaw`
+              SELECT current_database() AS database
+            `;
+
+            console.log("Database:", result[0]?.database ?? "unknown");
+          } finally {
+            await prisma.$disconnect();
+          }
+          NODE
+
+          # ------------------------------------------------------
+          # PM2
+          # ------------------------------------------------------
+
+          echo "Checking PM2..."
+
+          if pm2 describe backend >/dev/null 2>&1; then
+            echo "Existing PM2 process found."
+
+            pm2 restart backend --update-env
           else
-            echo "::error::dist/app.js has no /api/version route — the new build did not land in $(pwd)"
+            echo "PM2 process does not exist. Starting backend..."
+
+            pm2 start dist/index.js \
+              --name backend \
+              --cwd "$APP_DIR" \
+              --update-env
+          fi
+
+          pm2 save
+
+          # ------------------------------------------------------
+          # Verify PM2 configuration
+          # ------------------------------------------------------
+
+          echo "Verifying PM2 process..."
+
+          PM2_DATA="$(
+            pm2 jlist |
+            node --input-type=module <<'NODE'
+          let input = "";
+
+          process.stdin.on("data", chunk => {
+            input += chunk;
+          });
+
+          process.stdin.on("end", () => {
+            const processes = JSON.parse(input);
+            const app = processes.find(p => p.name === "backend");
+
+            if (!app) {
+              console.error("PM2 backend process not found");
+              process.exit(1);
+            }
+
+            console.log(JSON.stringify({
+              cwd: app.pm2_env?.pm_cwd || "",
+              script: app.pm2_env?.pm_exec_path || "",
+              status: app.pm2_env?.status || ""
+            }));
+          });
+          NODE
+          )"
+
+          echo "PM2 data: $PM2_DATA"
+
+          PM2_CWD="$(echo "$PM2_DATA" | node -e '
+            let s="";
+            process.stdin.on("data",d=>s+=d);
+            process.stdin.on("end",()=>console.log(JSON.parse(s).cwd));
+          ')"
+
+          PM2_SCRIPT="$(echo "$PM2_DATA" | node -e '
+            let s="";
+            process.stdin.on("data",d=>s+=d);
+            process.stdin.on("end",()=>console.log(JSON.parse(s).script));
+          ')"
+
+          PM2_STATUS="$(echo "$PM2_DATA" | node -e '
+            let s="";
+            process.stdin.on("data",d=>s+=d);
+            process.stdin.on("end",()=>console.log(JSON.parse(s).status));
+          ')"
+
+          echo "PM2 cwd: $PM2_CWD"
+          echo "PM2 script: $PM2_SCRIPT"
+          echo "PM2 status: $PM2_STATUS"
+
+          if [ "$PM2_CWD" != "$APP_DIR" ]; then
+            echo "::error::PM2 cwd is incorrect: $PM2_CWD"
             exit 1
           fi
 
-          echo "--- pm2 process ---"
-          pm2 describe backend || true
+          if [ "$PM2_SCRIPT" != "$APP_DIR/dist/index.js" ]; then
+            echo "::error::PM2 script is incorrect: $PM2_SCRIPT"
+            exit 1
+          fi
 
-          echo "--- app port (server .env, fallback 4000) ---"
-          PORT_CAND="$(grep -E '^PORT=' .env 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d ' \r"' || true)"
-          [ -n "$PORT_CAND" ] || PORT_CAND="4000"
-          echo "PORT_CAND=$PORT_CAND"
+          if [ "$PM2_STATUS" != "online" ]; then
+            echo "::error::PM2 backend is not online"
+            exit 1
+          fi
 
-          echo "--- listeners ---"
-          ss -ltn 2>/dev/null || echo "ss unavailable"
+          echo "PM2 configuration: OK"
 
-          echo "--- direct-to-process check (bypasses any proxy) ---"
-          CANDS="$PORT_CAND"
-          if [ "$PORT_CAND" != "4000" ]; then CANDS="$CANDS 4000"; fi
-          HIT=""
-          SEEN=""
-          for P in $CANDS; do
-            F="$(mktemp)"
-            HTTP="$(curl -sS --max-time 10 -o "$F" -w '%{http_code}' "http://127.0.0.1:$P/api/version" || true)"
-            BODY="$(cat "$F" 2>/dev/null || echo '<empty>')"
-            rm -f "$F"
-            V="$(printf '%s' "$BODY" | grep -o '"version":"[^"]*"' | cut -d'"' -f4 || true)"
-            echo "127.0.0.1:$P -> http=$HTTP version=${V:-<none>}"
-            if [ -n "$V" ] && [ -z "$SEEN" ]; then SEEN="$P:$HTTP:$V"; fi
-            if [ "$V" = "$EXPECTED_SHA" ]; then HIT="$P"; fi
+          REMOTE_SCRIPT
+
+      # ----------------------------------------------------------
+      # Verify actual live application
+      # ----------------------------------------------------------
+      - name: Verify live application
+        shell: bash
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          ssh -i ~/.ssh/digitalocean \
+            "$DO_USER@$DO_HOST" \
+            "EXPECTED_SHA='$EXPECTED_SHA' bash -s" <<'REMOTE_SCRIPT'
+
+          set -euo pipefail
+
+          APP_DIR="$HOME/pos/POS-server"
+
+          cd "$APP_DIR"
+
+          set -a
+          . ./.env
+          set +a
+
+          PORT_VALUE="${PORT:-4000}"
+
+          echo "Application port: $PORT_VALUE"
+
+          # ------------------------------------------------------
+          # Wait for application
+          # ------------------------------------------------------
+
+          for i in $(seq 1 20); do
+
+            if curl -fsS \
+              --max-time 5 \
+              "http://127.0.0.1:$PORT_VALUE/api/health" \
+              >/tmp/health.json 2>/dev/null
+            then
+              echo "Application is responding."
+              break
+            fi
+
+            if [ "$i" = "20" ]; then
+              echo "::error::Application did not become healthy"
+              pm2 logs backend --lines 100 --nostream || true
+              exit 1
+            fi
+
+            sleep 2
           done
-          if [ -z "$HIT" ]; then
-            echo "::error::No local process serves $EXPECTED_SHA (closest: ${SEEN:-nothing listening}) — pm2 runs a stale dist, a different directory/port, or the process is down"
+
+          # ------------------------------------------------------
+          # Health
+          # ------------------------------------------------------
+
+          HEALTH_HTTP="$(
+            curl -sS \
+              --max-time 10 \
+              -o /tmp/health.json \
+              -w '%{http_code}' \
+              "http://127.0.0.1:$PORT_VALUE/api/health"
+          )"
+
+          cat /tmp/health.json || true
+
+          if [ "$HEALTH_HTTP" != "200" ]; then
+            echo "::error::/api/health returned $HEALTH_HTTP"
             exit 1
           fi
-          echo "Live process on 127.0.0.1:$HIT serves the deployed commit"
-          REMOTE_EOF
 
-      - name: Verify deployment
+          echo "/api/health: OK"
+
+          # ------------------------------------------------------
+          # Version
+          # ------------------------------------------------------
+
+          VERSION_RESPONSE="$(
+            curl -fsS \
+              --max-time 10 \
+              "http://127.0.0.1:$PORT_VALUE/api/version"
+          )"
+
+          echo "Version response:"
+          echo "$VERSION_RESPONSE"
+
+          LIVE_SHA="$(
+            printf '%s' "$VERSION_RESPONSE" |
+            grep -o '"version":"[^"]*"' |
+            cut -d'"' -f4
+          )"
+
+          if [ "$LIVE_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::Live version mismatch"
+            echo "Expected: $EXPECTED_SHA"
+            echo "Actual:   $LIVE_SHA"
+            exit 1
+          fi
+
+          echo "Live version: OK"
+
+          # ------------------------------------------------------
+          # Readiness
+          # ------------------------------------------------------
+
+          READY_HTTP="$(
+            curl -sS \
+              --max-time 10 \
+              -o /tmp/ready.json \
+              -w '%{http_code}' \
+              "http://127.0.0.1:$PORT_VALUE/api/ready" \
+              || true
+          )"
+
+          cat /tmp/ready.json || true
+
+          if [ "$READY_HTTP" != "200" ]; then
+            echo "::error::/api/ready returned $READY_HTTP"
+            echo "Production/staging deployment is not considered successful."
+            exit 1
+          fi
+
+          echo "/api/ready: OK"
+
+          echo "=========================================="
+          echo "LIVE APPLICATION VERIFIED"
+          echo "SHA: $EXPECTED_SHA"
+          echo "=========================================="
+
+          REMOTE_SCRIPT
+
+      # ----------------------------------------------------------
+      # External verification
+      # ----------------------------------------------------------
+      - name: Verify public API
         shell: bash
         env:
           BACKEND_URL: ${{ secrets.BACKEND_URL }}
           EXPECTED_SHA: ${{ github.sha }}
         run: |
-          for i in 1 2 3 4 5 6 7 8 9 10; do
-            sleep 3
-            if curl -fsS "$BACKEND_URL/api/health"; then
-              echo "Backend healthy"
-              LIVE="$(curl -fsS "$BACKEND_URL/api/version" | grep -o '"version":"[^"]*"' | cut -d'"' -f4 || true)"
-              echo "Live version: $LIVE (expected $EXPECTED_SHA)"
-              if [ -n "$LIVE" ] && [ "$LIVE" = "$EXPECTED_SHA" ]; then
-                echo "Deployed version verified live"
-                exit 0
-              fi
-              echo "Waiting for the new version to go live..."
-            fi
-          done
-          echo "Deployment verification failed: live version does not match $EXPECTED_SHA"
-          echo "The on-server check above already proved the pm2 process state — if it passed, a proxy/CDN is caching or routing to the wrong upstream instead."
-          exit 1
+          set -euo pipefail
 
-  # ── Rollback ──────────────────────────────────────────────
+          test -n "$BACKEND_URL" || {
+            echo "::error::BACKEND_URL is not configured"
+            exit 1
+          }
+
+          for i in $(seq 1 20); do
+
+            if curl -fsS \
+              --max-time 10 \
+              "$BACKEND_URL/api/health" \
+              >/tmp/public-health.json
+            then
+              echo "Public /api/health: OK"
+              break
+            fi
+
+            if [ "$i" = "20" ]; then
+              echo "::error::Public backend health check failed"
+              exit 1
+            fi
+
+            sleep 3
+          done
+
+          PUBLIC_VERSION="$(
+            curl -fsS \
+              --max-time 10 \
+              "$BACKEND_URL/api/version"
+          )"
+
+          echo "$PUBLIC_VERSION"
+
+          LIVE_SHA="$(
+            printf '%s' "$PUBLIC_VERSION" |
+            grep -o '"version":"[^"]*"' |
+            cut -d'"' -f4
+          )"
+
+          if [ "$LIVE_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::Public API version mismatch"
+            echo "Expected: $EXPECTED_SHA"
+            echo "Actual:   $LIVE_SHA"
+            exit 1
+          fi
+
+          echo "Public API deployment verified successfully."
+
+  # ============================================================
+  # Rollback
+  # ============================================================
   rollback:
-    needs: [resolve-env]
-    if: github.event_name == 'workflow_dispatch' && inputs.force_rollback == true
+    needs: resolve-env
+
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      inputs.force_rollback == true
+
     runs-on: ubuntu-latest
+
     environment: ${{ needs.resolve-env.outputs.environment }}
+
     steps:
-      - name: Configure SSH for DigitalOcean
+      - name: Configure SSH
         shell: bash
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
-          DO_PORT: "22"
           DO_USER: ${{ secrets.DO_USER }}
           DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
         run: |
-          test -n "$DO_HOST"  || { echo "::error::DO_HOST is empty"; exit 1; }
-          test -n "$DO_USER"  || { echo "::error::DO_USER is empty"; exit 1; }
-          test -n "$DO_PORT"  || { echo "::error::DO_PORT is empty"; exit 1; }
+          set -euo pipefail
+
+          test -n "$DO_HOST"
+          test -n "$DO_USER"
+          test -n "$DO_SSH_KEY"
 
           mkdir -p ~/.ssh
+
           printf '%s\n' "$DO_SSH_KEY" > ~/.ssh/digitalocean
           chmod 600 ~/.ssh/digitalocean
-          ssh-keygen -R "$DO_HOST" 2>/dev/null || true
-          ssh-keyscan -p "$DO_PORT" "$DO_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-          echo "SSH configured: host=$DO_HOST user=$DO_USER port=$DO_PORT"
+          ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Rollback to previous version
+      - name: Rollback application
         shell: bash
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
-          DO_PORT: "22"
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh -i ~/.ssh/digitalocean -p "$DO_PORT" "$DO_USER@$DO_HOST" '
-            set -e
-            cd ~/pos/POS-server
+          set -euo pipefail
 
-            LATEST="$(ls -dt dist.backup-* 2>/dev/null | head -n 1 || true)"
-            if [ -z "$LATEST" ] && [ -d dist.backup ]; then LATEST="dist.backup"; fi
-            if [ -z "$LATEST" ]; then
-              echo "No backup found, cannot rollback"
-              exit 1
-            fi
-            echo "Restoring $LATEST ..."
-            rm -rf dist.failed
-            if [ -d dist ]; then mv dist dist.failed; fi
-            mv "$LATEST" dist
+          ssh -i ~/.ssh/digitalocean \
+            "$DO_USER@$DO_HOST" '
+              set -euo pipefail
 
-            corepack enable
-            corepack prepare pnpm@9 --activate
-            pnpm install --frozen-lockfile
+              APP_DIR="$HOME/pos/POS-server"
 
-            echo "WARNING: Prisma migrations applied by the failed deploy are NOT reverted."
-            echo "If they were not backward-compatible, this version may fail — prefer a forward-fix."
+              cd "$APP_DIR"
 
-            pm2 restart backend --update-env
-            pm2 save
+              LATEST_BACKUP="$(
+                ls -dt dist.backup-* 2>/dev/null |
+                head -n 1 || true
+              )"
 
-            echo "Rolled back using $LATEST (previous dist kept at dist.failed)"
-          '
+              if [ -z "$LATEST_BACKUP" ]; then
+                echo "::error::No application backup found"
+                exit 1
+              fi
 
-      - name: Verify rollback
+              echo "Restoring: $LATEST_BACKUP"
+
+              rm -rf dist.rollback
+
+              if [ -d dist ]; then
+                mv dist dist.rollback
+              fi
+
+              mv "$LATEST_BACKUP" dist
+
+              corepack enable
+              corepack prepare pnpm@9 --activate
+
+              pnpm install --frozen-lockfile
+
+              echo "::warning::Database migrations are NOT rolled back."
+              echo "::warning::Rollback only restores application files."
+
+              pm2 restart backend --update-env
+              pm2 save
+
+              echo "Application rollback completed."
+            '
+
+      - name: Verify rollback health
         shell: bash
         env:
           BACKEND_URL: ${{ secrets.BACKEND_URL }}
         run: |
-          for i in 1 2 3 4 5 6 7 8 9 10; do
-            sleep 3
-            if curl -fsS "$BACKEND_URL/api/health"; then
-              echo "Backend healthy after rollback"
-              echo "Live version after rollback:"
-              curl -fsS "$BACKEND_URL/api/version" || true
+          set -euo pipefail
+
+          for i in $(seq 1 20); do
+
+            if curl -fsS \
+              --max-time 10 \
+              "$BACKEND_URL/api/health"
+              then
+
+              echo "Rollback health check passed."
+
+              curl -fsS \
+                --max-time 10 \
+                "$BACKEND_URL/api/version" || true
+
               exit 0
             fi
+
+            sleep 3
           done
-          echo "Backend health check failed after rollback"
+
+          echo "::error::Rollback health check failed"
           exit 1
 
-  # ── Summary ───────────────────────────────────────────────
+  # ============================================================
+  # Summary
+  # ============================================================
   summary:
-    needs: [resolve-env, test, lint, build, deploy, rollback]
-    runs-on: ubuntu-latest
+    needs:
+      [
+        resolve-env,
+        test,
+        lint,
+        build,
+        deploy,
+        rollback
+      ]
+
     if: always()
+
+    runs-on: ubuntu-latest
+
     steps:
       - name: CI/CD Summary
+        shell: bash
         run: |
-          echo "## Backend CI/CD Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Environment | ${{ needs.resolve-env.outputs.environment }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| DO_HOST configured | ${{ secrets.DO_HOST != '' }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| DO_USER configured | ${{ secrets.DO_USER != '' }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| DO_SSH_KEY configured | ${{ secrets.DO_SSH_KEY != '' }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| BACKEND_URL configured | ${{ secrets.BACKEND_URL != '' }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Test | ${{ needs.test.result }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Lint | ${{ needs.lint.result }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Build | ${{ needs.build.result }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Deploy | ${{ needs.deploy.result }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Rollback | ${{ needs.rollback.result }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Secrets Status" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Secret | Configured |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|--------|------------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| DO_HOST | ${{ secrets.DO_HOST != '' }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| DO_USER | ${{ secrets.DO_USER != '' }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| DO_SSH_KEY | ${{ secrets.DO_SSH_KEY != '' }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| BACKEND_URL | ${{ secrets.BACKEND_URL != '' }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| JWT_SECRET | ${{ secrets.JWT_SECRET != '' }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| JWT_REFRESH_SECRET | ${{ secrets.JWT_REFRESH_SECRET != '' }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| PLATFORM_BOOTSTRAP_TOKEN | ${{ secrets.PLATFORM_BOOTSTRAP_TOKEN != '' }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### CI Environment" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Var | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| NODE_VERSION | ${{ env.NODE_VERSION }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| PNPM_VERSION | ${{ env.PNPM_VERSION }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Event | ${{ github.event_name }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Branch | ${{ github.ref }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Runner OS | ${{ runner.os }} |" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Backend CI/CD Summary"
+            echo ""
+            echo "| Item | Result |"
+            echo "|------|--------|"
+            echo "| Environment | ${{ needs.resolve-env.outputs.environment }} |"
+            echo "| Test | ${{ needs.test.result }} |"
+            echo "| Lint | ${{ needs.lint.result }} |"
+            echo "| Build | ${{ needs.build.result }} |"
+            echo "| Deploy | ${{ needs.deploy.result }} |"
+            echo "| Rollback | ${{ needs.rollback.result }} |"
+            echo "| Commit | ${{ github.sha }} |"
+            echo "| Event | ${{ github.event_name }} |"
+            echo "| Ref | ${{ github.ref }} |"
+            echo ""
+            echo "### Configuration"
+            echo ""
+            echo "| Secret | Configured |"
+            echo "|--------|------------|"
+            echo "| DO_HOST | ${{ secrets.DO_HOST != '' }} |"
+            echo "| DO_USER | ${{ secrets.DO_USER != '' }} |"
+            echo "| DO_SSH_KEY | ${{ secrets.DO_SSH_KEY != '' }} |"
+            echo "| BACKEND_URL | ${{ secrets.BACKEND_URL != '' }} |"
+            echo "| JWT_SECRET | ${{ secrets.JWT_SECRET != '' }} |"
+            echo "| JWT_REFRESH_SECRET | ${{ secrets.JWT_REFRESH_SECRET != '' }} |"
+            echo "| PLATFORM_BOOTSTRAP_TOKEN | ${{ secrets.PLATFORM_BOOTSTRAP_TOKEN != '' }} |"
+            echo ""
+            echo "### Toolchain"
+            echo ""
+            echo "| Tool | Version |"
+            echo "|------|---------|"
+            echo "| Node.js | ${{ env.NODE_VERSION }} |"
+            echo "| pnpm | ${{ env.PNPM_VERSION }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
