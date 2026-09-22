@@ -104,9 +104,9 @@ export async function applyOpeningStock(
   ctx: RequestContext,
   variantId: string,
   rows: OpeningRow[] | undefined,
-  trackInventory: boolean,
+  _trackInventory: boolean,
 ) {
-  if (!trackInventory || !Array.isArray(rows)) return;
+  if (!Array.isArray(rows) || rows.length === 0) return;
   for (const row of rows) {
     if (!row.locationId) continue;
     const qty = Number(row.quantity ?? 0);
