@@ -17,6 +17,15 @@ export const catalogProductsController = {
     }
   },
 
+  async deleteUpload(req: Request, res: Response, next: NextFunction) {
+    try {
+      const url = String((req.body as any)?.url ?? (req.query as any)?.url ?? "");
+      return ok(res, await catalogProductsService.deleteUpload(url));
+    } catch (e) {
+      return next(e);
+    }
+  },
+
   async listProducts(req: Request, res: Response, next: NextFunction) {
     try {
       const { rows, pagination } = await catalogProductsService.listProducts(ctxOf(req), req.query as Record<string, unknown>);

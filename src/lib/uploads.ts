@@ -23,9 +23,22 @@ export async function saveDataUrl(dataUrl: string) {
   const ext = MIME[mime];
   if (!ext) throw Object.assign(new Error("Unsupported image type"), { code: "VALIDATION" });
   const buf = Buffer.from(m[2], "base64");
-  if (buf.length > 4 * 1024 * 1024) throw Object.assign(new Error("Image must be under 4MB"), { code: "VALIDATION" });
+  if (buf.length > 1 * 1024 * 1024) throw Object.assign(new Error("Image must be under 1 MB"), { code: "VALIDATION" });
   await fs.mkdir(root, { recursive: true });
   const name = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
   await fs.writeFile(path.join(root, name), buf);
   return `/uploads/${name}`;
+}
+
+export async function deleteUpload(url?: string | null) {
+  if (!url || !url.startsWith("/uploads/")) return;
+  const name = path.basename(url.split("?")[0]);
+  // prevent path traversal
+  if (!name || name.includes("..") || name.includes("/") || name.includes("\\")) return;
+  const file = path.join(root, name);
+  try {
+    await fs.unlink(file);
+  } catch {
+    // ignore missing
+  }
 }

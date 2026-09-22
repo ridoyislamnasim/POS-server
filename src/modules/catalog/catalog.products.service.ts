@@ -1,18 +1,20 @@
 import { writeAudit } from "../../lib/audit.js";
 import { acceptEnum, acceptId, ilike, parseListQuery, withPagination } from "../../lib/list-query.js";
-import { saveDataUrl } from "../../lib/uploads.js";
+import { deleteUpload, saveDataUrl } from "../../lib/uploads.js";
 import { hasPermission } from "../../lib/scope.js";
 import { IndustryPackRegistry } from "../../packs/registry.js";
 import { DEFAULT_VARIANT_KEY } from "../../shared/cartesian.js";
 import { AppError } from "../../utils/errors.js";
 import type { RequestContext } from "../../types.js";
 import {
+  applyOpeningStock,
   assertUniqueBarcode,
   assertUniqueProductCode,
   assertUniqueSku,
   createVariantRecord,
   generateFromAxes,
   slugify,
+  type OpeningRow,
   type VariantInput,
 } from "./catalog.service.js";
 import { catalogRepository } from "./catalog.repository.js";
@@ -109,6 +111,12 @@ export const catalogProductsService = {
   async upload(dataUrl: string) {
     if (!dataUrl) throw new AppError("VALIDATION", "dataUrl required", 400);
     return { url: await saveDataUrl(String(dataUrl)) };
+  },
+
+  async deleteUpload(url: string) {
+    if (!url) throw new AppError("VALIDATION", "url required", 400);
+    await deleteUpload(url);
+    return { deleted: true };
   },
 
   async listProducts(ctx: Ctx, query: Record<string, unknown>) {
@@ -431,6 +439,9 @@ export const catalogProductsService = {
             primary: true,
           });
         }
+        if (Array.isArray((simple as any).openingStock)) {
+          await applyOpeningStock(ctx, def.id, (simple as any).openingStock as OpeningRow[], product.trackInventory);
+        }
       }
     }
     if (Array.isArray(body.bundleItems)) {
@@ -467,6 +478,12 @@ export const catalogProductsService = {
             ...(row.imageUrl !== undefined ? { imageUrl: row.imageUrl || null } : {}),
             status,
           });
+          if (row.imageUrl !== undefined && (cur as any).imageUrl && String(row.imageUrl || "") !== String((cur as any).imageUrl || "")) {
+            await deleteUpload((cur as any).imageUrl);
+          }
+          if (Array.isArray((row as any).openingStock)) {
+            await applyOpeningStock(ctx, cur.id, (row as any).openingStock as OpeningRow[], product.trackInventory);
+          }
           const newCode = row.barcode != null ? String(row.barcode).trim() : "";
           const primary = cur.barcodes.find((b) => b.primary) ?? cur.barcodes[0];
           if (newCode && (!primary || primary.code !== newCode)) {
@@ -505,6 +522,8 @@ export const catalogProductsService = {
           (x): x is string => typeof x === "string" && byId.has(x),
         );
         for (const id of ids) {
+          const doomed = byId.get(id) as any;
+          if (doomed?.imageUrl) await deleteUpload(doomed.imageUrl);
           await catalogRepository.deleteVariantCascade(id);
         }
       }
@@ -571,6 +590,9 @@ export const catalogProductsService = {
       const hit = await catalogRepository.findVariantSku(ctx.tenantId!, String(sku).toUpperCase(), existing.id);
       if (hit) throw new AppError("CONFLICT", "SKU already exists", 409);
     }
+    if (imageUrl !== undefined && (existing as any).imageUrl && String(imageUrl || "") !== String((existing as any).imageUrl || "")) {
+      await deleteUpload((existing as any).imageUrl);
+    }
     return catalogRepository.updateVariant(existing.id, {
       ...(sku ? { sku: String(sku).toUpperCase() } : {}),
       ...(price !== undefined ? { price: String(price) } : {}),
@@ -589,6 +611,7 @@ export const catalogProductsService = {
   async deleteVariant(ctx: Ctx, variantId: string) {
     const existing = await catalogRepository.findVariant(ctx.tenantId!, variantId);
     if (!existing) throw new AppError("NOT_FOUND", "Variant not found", 404);
+    if ((existing as any).imageUrl) await deleteUpload((existing as any).imageUrl);
     await catalogRepository.deleteVariantCascade(existing.id);
     return { id: existing.id };
   },

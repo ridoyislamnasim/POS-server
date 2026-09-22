@@ -24,6 +24,7 @@ catalogRouter.use(requireAuth, requireTenant);
 const manage = requirePermission("catalog.manage");
 
 catalogRouter.post("/uploads", manage, validateBody(uploadSchema), catalogProductsController.upload);
+catalogRouter.delete("/uploads", manage, catalogProductsController.deleteUpload);
 
 catalogRouter.get("/categories", taxonomy.listCategories);
 catalogRouter.post("/categories", manage, validateBody(categorySchema), taxonomy.createCategory);
