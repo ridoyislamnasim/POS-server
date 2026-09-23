@@ -1,39 +1,54 @@
 // Sales orders, marketplace/e-commerce tickets, last-mile delivery.
 
 model SalesOrder {
-  id          String           @id @default(cuid())
-  tenantId    String
-  branchId    String
-  branch      Branch           @relation(fields: [branchId], references: [id])
-  customerId  String?
-  customer    Customer?        @relation(fields: [customerId], references: [id])
-  status      OrderStatus      @default(DRAFT)
-  number      String
-  notes       String?
-  subtotal    Decimal          @db.Decimal(19, 4)
-  tax         Decimal          @default(0) @db.Decimal(19, 4)
-  total       Decimal          @db.Decimal(19, 4)
-  saleId      String?
-  items       SalesOrderItem[]
-  deliveries  Delivery[]
-  createdById String?
-  createdAt   DateTime         @default(now())
+  id                 String           @id @default(cuid())
+  tenantId           String
+  branchId           String
+  branch             Branch           @relation(fields: [branchId], references: [id])
+  locationId         String?
+  customerId         String?
+  customer           Customer?        @relation(fields: [customerId], references: [id])
+  status             OrderStatus      @default(DRAFT)
+  number             String
+  notes              String?
+  customerNotes      String?
+  internalNotes      String?
+  deliveryNotes      String?
+  expectedDeliveryAt DateTime?
+  reference          String?
+  subtotal           Decimal          @db.Decimal(19, 4)
+  discount           Decimal          @default(0) @db.Decimal(19, 4)
+  tax                Decimal          @default(0) @db.Decimal(19, 4)
+  total              Decimal          @db.Decimal(19, 4)
+  saleId             String?
+  items              SalesOrderItem[]
+  deliveries         Delivery[]
+  createdById        String?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @default(now()) @updatedAt
 
   @@unique([tenantId, number])
   @@index([tenantId, branchId, createdAt])
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, customerId, createdAt])
 }
 
 model SalesOrderItem {
-  id           String         @id @default(cuid())
-  salesOrderId String
-  salesOrder   SalesOrder     @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
-  variantId    String
-  variant      ProductVariant @relation(fields: [variantId], references: [id])
-  qty          Decimal        @db.Decimal(19, 4)
-  unitPrice    Decimal        @db.Decimal(19, 4)
-  lineTotal    Decimal        @db.Decimal(19, 4)
-  nameSnapshot String
-  skuSnapshot  String
+  id             String         @id @default(cuid())
+  salesOrderId   String
+  salesOrder     SalesOrder     @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  variantId      String
+  variant        ProductVariant @relation(fields: [variantId], references: [id])
+  qty            Decimal        @db.Decimal(19, 4)
+  unitPrice      Decimal        @db.Decimal(19, 4)
+  originalPrice  Decimal        @default(0) @db.Decimal(19, 4)
+  discountAmount Decimal        @default(0) @db.Decimal(19, 4)
+  taxRate        Decimal        @default(0) @db.Decimal(7, 4)
+  taxAmount      Decimal        @default(0) @db.Decimal(19, 4)
+  lineTotal      Decimal        @db.Decimal(19, 4)
+  nameSnapshot   String
+  skuSnapshot    String
+  variantSnapshot String?
 }
 
 model EcommerceOrder {

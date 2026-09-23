@@ -17,6 +17,14 @@ export const commerceController = {
     }
   },
 
+  async getSalesOrder(req: Request, res: Response, next: NextFunction) {
+    try {
+      return ok(res, await commerceService.getSalesOrder((req as AuthedRequest).ctx, String(req.params.id)));
+    } catch (e) {
+      return next(e);
+    }
+  },
+
   async createSalesOrder(req: Request, res: Response, next: NextFunction) {
     try {
       return ok(res, await commerceService.createSalesOrder((req as AuthedRequest).ctx, req.body ?? {}), undefined, 201);
@@ -31,6 +39,32 @@ export const commerceController = {
         res,
         await commerceService.updateSalesOrder((req as AuthedRequest).ctx, String(req.params.id), req.body ?? {}),
       );
+    } catch (e) {
+      return next(e);
+    }
+  },
+
+  async duplicateSalesOrder(req: Request, res: Response, next: NextFunction) {
+    try {
+      return ok(res, await commerceService.duplicateSalesOrder((req as AuthedRequest).ctx, String(req.params.id)), undefined, 201);
+    } catch (e) {
+      return next(e);
+    }
+  },
+
+  async convertSalesOrder(req: Request, res: Response, next: NextFunction) {
+    try {
+      return ok(res, await commerceService.convertSalesOrder((req as AuthedRequest).ctx, String(req.params.id)));
+    } catch (e) {
+      return next(e);
+    }
+  },
+
+  async linkConvertedSale(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { saleId } = req.body ?? {};
+      if (!saleId) throw Object.assign(new Error("saleId required"), { code: "VALIDATION", status: 400 });
+      return ok(res, await commerceService.linkConvertedSale((req as AuthedRequest).ctx, String(req.params.id), String(saleId)));
     } catch (e) {
       return next(e);
     }
