@@ -99,7 +99,19 @@ export const purchasesService = {
     }
     assertBranch(ctx, branchId);
     const tid = tenantId(ctx);
-    const computed = items.map((i) => {
+    // merge duplicate variants intelligently
+    const poMerged = new Map<string, typeof items[number]>();
+    for (const it of items) {
+      const k = String(it.variantId);
+      const ex = poMerged.get(k);
+      if (ex) {
+        ex.qty = Number((ex as unknown as { qty: number }).qty) + Number((it as unknown as { qty: number }).qty);
+        if ((it as unknown as { unitCost: unknown }).unitCost != null) (ex as unknown as { unitCost: number }).unitCost = Number((it as unknown as { unitCost: number }).unitCost);
+        if ((it as unknown as { taxRate?: number }).taxRate != null) (ex as unknown as { taxRate: number }).taxRate = Number((it as unknown as { taxRate: number }).taxRate);
+      } else poMerged.set(k, { ...it });
+    }
+    const mergedOrderItems = [...poMerged.values()];
+    const computed = mergedOrderItems.map((i) => {
       const qty = num(i.qty);
       const cost = num(i.unitCost);
       const taxRate = num(i.taxRate);
@@ -167,11 +179,26 @@ export const purchasesService = {
     const branch = await purchasesRepository.findBranch(branchId, tid);
     if (!branch) throw new AppError("NOT_FOUND", "Branch not found", 404);
     const loc = locationId || branch.locationId;
-    const ids = [...new Set(items.map((i) => i.variantId).filter(Boolean))];
+    // intelligent merge: same variant added twice sums qty, keeps last price — prevents accidental duplicate lines
+    const mergedMap = new Map<string, typeof items[number]>();
+    for (const it of items) {
+      const key = String(it.variantId);
+      const ex = mergedMap.get(key);
+      if (ex) {
+        ex.qty = Number((ex as unknown as { qty: number }).qty) + Number((it as unknown as { qty: number }).qty);
+        if ((it as unknown as { unitCost: unknown }).unitCost != null) (ex as unknown as { unitCost: number }).unitCost = Number((it as unknown as { unitCost: number }).unitCost);
+        if ((it as unknown as { taxRate?: number }).taxRate != null) (ex as unknown as { taxRate: number }).taxRate = Number((it as unknown as { taxRate: number }).taxRate);
+        if ((it as unknown as { retailPrice?: number }).retailPrice != null) (ex as unknown as { retailPrice: number }).retailPrice = Number((it as unknown as { retailPrice: number }).retailPrice);
+        if ((it as unknown as { wholesalePrice?: number }).wholesalePrice != null)
+          (ex as unknown as { wholesalePrice: number }).wholesalePrice = Number((it as unknown as { wholesalePrice: number }).wholesalePrice);
+      } else mergedMap.set(key, { ...it });
+    }
+    const mergedItems = [...mergedMap.values()];
+    const ids = [...new Set(mergedItems.map((i) => i.variantId).filter(Boolean))];
     const owned = await purchasesRepository.countVariants(tid, ids);
     if (owned.length !== ids.length) throw new AppError("FORBIDDEN", "Variant not in tenant", 403);
 
-    const computed = items.map((i) => {
+    const computed = mergedItems.map((i) => {
       const qty = new Prisma.Decimal(String(i.qty ?? 0));
       const cost = new Prisma.Decimal(String(i.unitCost ?? 0));
       const taxRate = new Prisma.Decimal(String(i.taxRate ?? 0));
@@ -241,6 +268,19 @@ export const purchasesService = {
         items: computed.map((i) => ({ variantId: i.variantId, qty: i.qty, unitCost: i.unitCost })),
         notes,
       });
+      // Optional selling-price updates per variant (inherited vs overridden — only if supplied)
+      for (const raw of mergedItems) {
+        const rp = (raw as unknown as { retailPrice?: number }).retailPrice;
+        const wp = (raw as unknown as { wholesalePrice?: number }).wholesalePrice;
+        if (rp != null || wp != null) {
+          const data: Record<string, string> = {};
+          if (rp != null && Number.isFinite(Number(rp))) data.retailPrice = String(rp);
+          if (wp != null && Number.isFinite(Number(wp))) data.wholesalePrice = String(wp);
+          if (Object.keys(data).length) {
+            await tx.productVariant.update({ where: { id: raw.variantId }, data });
+          }
+        }
+      }
       if (due.greaterThan(0)) {
         await tx.supplier.update({
           where: { id: supplierId },
@@ -248,10 +288,35 @@ export const purchasesService = {
         });
       }
       if (purchaseOrderId) {
-        await tx.purchaseOrder.update({
-          where: { id: purchaseOrderId },
-          data: { status: "RECEIVED" },
-        });
+        const po = await tx.purchaseOrder.findFirst({ where: { id: purchaseOrderId, tenantId: tid }, include: { items: true } });
+        if (!po) throw new AppError("NOT_FOUND", "Purchase order not found", 404);
+        if (po.status === "CANCELLED") throw new AppError("CONFLICT", "Cannot receive against cancelled PO", 409);
+        if (po.status === "RECEIVED") throw new AppError("CONFLICT", "PO already fully received", 409);
+        const poMap = new Map(po.items.map((it) => [it.variantId, it] as const));
+        for (const it of computed) {
+          const poItem = poMap.get(it.variantId);
+          if (!poItem) continue; // allow extra variants not in PO without PO tracking
+          const ordered = new Prisma.Decimal(String(poItem.qty));
+          const already = new Prisma.Decimal(String(poItem.receivedQty));
+          const remaining = ordered.minus(already);
+          if (it.qty.greaterThan(remaining)) {
+            throw new AppError(
+              "VALIDATION",
+              `Over-receiving variant ${poItem.variantId}: ordered ${ordered.toString()}, received ${already.toString()}, remaining ${remaining.toString()}, tried ${it.qty.toString()}`,
+              400,
+            );
+          }
+        }
+        for (const it of computed) {
+          const poItem = poMap.get(it.variantId);
+          if (!poItem) continue;
+          await tx.purchaseOrderItem.update({ where: { id: poItem.id }, data: { receivedQty: { increment: it.qty } } });
+        }
+        const updatedPo = await tx.purchaseOrder.findFirst({ where: { id: purchaseOrderId }, include: { items: true } });
+        const totalOrdered = updatedPo!.items.reduce((s, it) => s.plus(new Prisma.Decimal(String(it.qty))), new Prisma.Decimal(0));
+        const totalReceived = updatedPo!.items.reduce((s, it) => s.plus(new Prisma.Decimal(String(it.receivedQty))), new Prisma.Decimal(0));
+        const newStatus: string = totalReceived.greaterThanOrEqualTo(totalOrdered) ? "RECEIVED" : totalReceived.greaterThan(0) ? "PARTIAL" : "ORDERED";
+        await tx.purchaseOrder.update({ where: { id: purchaseOrderId }, data: { status: newStatus as never } });
       }
       await enqueueOutbox(tx, {
         tenantId: tid,

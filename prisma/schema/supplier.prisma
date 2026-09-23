@@ -53,9 +53,9 @@ model PurchaseOrderItem {
   variant         ProductVariant  @relation(fields: [variantId], references: [id])
   qty             Decimal         @db.Decimal(19, 4)
   receivedQty     Decimal         @default(0) @db.Decimal(19, 4)
-  unitCost        Decimal         @db.Decimal(19, 4)
+  unitCost        Decimal         @default(0) @db.Decimal(19, 4)
   taxRate         Decimal         @default(0) @db.Decimal(7, 4)
-  lineTotal       Decimal         @db.Decimal(19, 4)
+  lineTotal       Decimal         @default(0) @db.Decimal(19, 4)
 }
 
 model Purchase {

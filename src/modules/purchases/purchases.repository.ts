@@ -52,9 +52,25 @@ export const purchasesRepository = {
   findOrder(id: string, tenantId: string, withPurchases = false) {
     return prisma.purchaseOrder.findFirst({
       where: { id, tenantId },
-      include: withPurchases
-        ? { supplier: true, branch: { select: { name: true } }, items: true, purchases: true }
-        : { supplier: true, branch: { select: { name: true } }, items: true, purchases: true },
+      include: {
+        supplier: true,
+        branch: { select: { name: true, locationId: true } },
+        items: {
+          include: {
+            variant: {
+              include: {
+                product: { select: { id: true, name: true, code: true } },
+                attributes: { include: { option: { include: { definition: true } } } },
+                barcodes: { where: { active: true } },
+              },
+            },
+          },
+          orderBy: { variantId: "asc" },
+        },
+        purchases: {
+          include: { items: { select: { variantId: true, qty: true } } },
+        },
+      },
     });
   },
 

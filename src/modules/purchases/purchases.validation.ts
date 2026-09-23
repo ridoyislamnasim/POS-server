@@ -1,10 +1,20 @@
 import { z } from "zod";
 
+const poItem = z.object({
+  variantId: z.string(),
+  qty: z.number(),
+  unitCost: z.number().optional(),
+  taxRate: z.number().optional(),
+});
+
 const orderItem = z.object({
   variantId: z.string(),
   qty: z.number(),
   unitCost: z.number(),
   taxRate: z.number().optional(),
+  retailPrice: z.number().optional(),
+  wholesalePrice: z.number().optional(),
+  discount: z.number().optional(),
 });
 
 export const createOrderSchema = z.object({
@@ -12,7 +22,7 @@ export const createOrderSchema = z.object({
   supplierId: z.string().min(1, "branchId, supplierId, items required"),
   notes: z.string().optional(),
   expectedAt: z.string().optional(),
-  items: z.array(orderItem).min(1, "branchId, supplierId, items required"),
+  items: z.array(poItem).min(1, "branchId, supplierId, items required"),
 });
 
 export const receivePurchaseSchema = z.object({

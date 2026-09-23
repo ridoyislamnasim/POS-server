@@ -3,6 +3,8 @@ export type OrderItemInput = {
   qty: number;
   unitCost: number;
   taxRate?: number;
+  retailPrice?: number;
+  wholesalePrice?: number;
 };
 
 export type CreateOrderInput = {
@@ -18,6 +20,9 @@ export type ReceiveItemInput = {
   qty: number;
   unitCost: number;
   taxRate?: number;
+  retailPrice?: number;
+  wholesalePrice?: number;
+  discount?: number;
 };
 
 export type ReceivePurchaseInput = {
