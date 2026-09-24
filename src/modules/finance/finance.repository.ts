@@ -305,9 +305,28 @@ export const financeRepository = {
     return prisma.income.findMany({ where: { tenantId, ...(scope as object), businessDate: range } });
   },
 
-  paymentsForRange(tenantId: string, range: { gte: Date; lte: Date }, branchId?: string) {
+  paymentsForRange(tenantId: string, scope: Record<string, unknown>, range: { gte: Date; lte: Date }) {
     return prisma.ledgerPayment.findMany({
-      where: { tenantId, ...(branchId ? { branchId } : {}), businessDate: range },
+      where: { tenantId, ...(scope as object), businessDate: range },
+    });
+  },
+
+  refundsForRange(tenantId: string, scope: Record<string, unknown>, range: { gte: Date; lte: Date }) {
+    // PaymentTransaction has no createdAt/businessDate. Use SaleReturn.createdAt as proxy for refund execution time.
+    // Schema gap: add businessDate/createdAt to PaymentTransaction for true money-movement date (see plan).
+    return prisma.paymentTransaction.findMany({
+      where: {
+        sale: { tenantId, ...(scope as object) },
+        saleReturnId: { not: null },
+        status: { in: ["REFUNDED", "PARTIALLY_REFUNDED"] as never },
+        saleReturn: { createdAt: range } as unknown as never,
+      },
+      select: {
+        amount: true,
+        method: true,
+        saleId: true,
+        saleReturn: { select: { createdAt: true } },
+      },
     });
   },
 
