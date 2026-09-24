@@ -15,6 +15,26 @@ export const financeRepository = {
     });
   },
 
+  findExpenseCategory(tenantId: string, id: string) {
+    return prisma.expenseCategory.findFirst({ where: { id, tenantId } });
+  },
+
+  updateExpenseCategory(id: string, data: Record<string, unknown>) {
+    return prisma.expenseCategory.update({ where: { id }, data: data as never });
+  },
+
+  deleteExpenseCategory(id: string) {
+    return prisma.expenseCategory.delete({ where: { id } });
+  },
+
+  countExpenseCategoryChildren(id: string) {
+    return prisma.expenseCategory.count({ where: { parentId: id } });
+  },
+
+  countExpensesByCategoryId(categoryId: string) {
+    return prisma.expense.count({ where: { categoryId } });
+  },
+
   // -- expenses
   listExpenses(opts: { where: Record<string, unknown>; skip: number; take: number; orderBy: Record<string, unknown> }) {
     return prisma.expense.findMany({

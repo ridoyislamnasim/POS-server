@@ -5,23 +5,46 @@ export const createExpenseCategorySchema = z.object({
   parentId: z.string().optional(),
 });
 
-export const createExpenseSchema = z.object({
-  categoryId: z.string().min(1, "categoryId and amount required"),
-  amount: z.union([z.string(), z.number()]),
-  tax: z.union([z.string(), z.number()]).optional(),
-  method: z.string().optional(),
-  vendor: z.string().optional(),
-  notes: z.string().optional(),
-  branchId: z.string().optional(),
-  businessDate: z.string().optional(),
+export const updateExpenseCategorySchema = z.object({
+  name: z.string().min(1).optional(),
+  parentId: z.string().nullable().optional(),
 });
+
+export const createExpenseSchema = z
+  .object({
+    categoryId: z.string().min(1, "categoryId and amount required"),
+    // legacy: amount+tax, new: subtotal/taxAmount/totalAmount — amount kept for back-compat (maps to total)
+    amount: z.union([z.string(), z.number()]).optional(),
+    subtotal: z.union([z.string(), z.number()]).optional(),
+    tax: z.union([z.string(), z.number()]).optional(),
+    taxAmount: z.union([z.string(), z.number()]).optional(),
+    totalAmount: z.union([z.string(), z.number()]).optional(),
+    taxRecoverable: z.boolean().optional(),
+    method: z.string().optional(),
+    paymentAccountId: z.string().optional(),
+    vendor: z.string().optional(),
+    vendorId: z.string().optional(),
+    notes: z.string().optional(),
+    branchId: z.string().optional(),
+    businessDate: z.string().optional(),
+  })
+  .refine((v) => v.amount != null || v.subtotal != null || v.totalAmount != null, {
+    message: "amount or subtotal required",
+    path: ["amount"],
+  });
 
 export const updateExpenseSchema = z.object({
   categoryId: z.string().optional(),
   amount: z.union([z.string(), z.number()]).optional(),
+  subtotal: z.union([z.string(), z.number()]).optional(),
   tax: z.union([z.string(), z.number()]).optional(),
+  taxAmount: z.union([z.string(), z.number()]).optional(),
+  totalAmount: z.union([z.string(), z.number()]).optional(),
+  taxRecoverable: z.boolean().optional(),
   method: z.string().optional(),
+  paymentAccountId: z.string().optional(),
   vendor: z.string().optional(),
+  vendorId: z.string().optional(),
   notes: z.string().optional(),
   branchId: z.string().optional(),
 });
@@ -56,6 +79,18 @@ export const createPaymentSchema = z.object({
   purchaseId: z.string().optional(),
 });
 
+export const createPaymentAccountSchema = z.object({
+  name: z.string().min(1, "name required"),
+  type: z.enum(["CASH", "BANK", "MFS", "CARD"]),
+  branchId: z.string().optional(),
+  coaAccountId: z.string().optional(),
+});
+
+export const updateAccountingSettingsSchema = z.object({
+  defaultTaxRecoverable: z.boolean().optional(),
+  useLedgerReports: z.boolean().optional(),
+});
+
 export const createDailyClosingSchema = z.object({
   branchId: z.string().min(1, "branchId and countedCash required"),
   countedCash: z.union([z.string(), z.number()]),
@@ -63,6 +98,10 @@ export const createDailyClosingSchema = z.object({
   notes: z.string().optional(),
 });
 
+export type UpdateAccountingSettingsBody = z.infer<typeof updateAccountingSettingsSchema>;
+export type CreatePaymentAccountBody = z.infer<typeof createPaymentAccountSchema>;
+
+export type UpdateExpenseCategoryBody = z.infer<typeof updateExpenseCategorySchema>;
 export type CreateExpenseCategoryBody = z.infer<typeof createExpenseCategorySchema>;
 export type CreateExpenseBody = z.infer<typeof createExpenseSchema>;
 export type UpdateExpenseBody = z.infer<typeof updateExpenseSchema>;

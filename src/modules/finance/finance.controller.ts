@@ -22,6 +22,22 @@ export const financeController = {
     }
   },
 
+  async updateExpenseCategory(req: Request, res: Response, next: NextFunction) {
+    try {
+      return ok(res, await financeService.updateExpenseCategory((req as AuthedRequest).ctx, String(req.params.id), req.body ?? {}));
+    } catch (e) {
+      return next(e);
+    }
+  },
+
+  async deleteExpenseCategory(req: Request, res: Response, next: NextFunction) {
+    try {
+      return ok(res, await financeService.deleteExpenseCategory((req as AuthedRequest).ctx, String(req.params.id)));
+    } catch (e) {
+      return next(e);
+    }
+  },
+
   async listExpenses(req: Request, res: Response, next: NextFunction) {
     try {
       const { rows, pagination } = await financeService.listExpenses(
@@ -56,6 +72,54 @@ export const financeController = {
   async deleteExpense(req: Request, res: Response, next: NextFunction) {
     try {
       return ok(res, await financeService.deleteExpense((req as AuthedRequest).ctx, String(req.params.id)));
+    } catch (e) {
+      return next(e);
+    }
+  },
+
+  async voidExpense(req: Request, res: Response, next: NextFunction) {
+    try {
+      return ok(res, await financeService.voidExpense((req as AuthedRequest).ctx, String(req.params.id)));
+    } catch (e) {
+      return next(e);
+    }
+  },
+
+  async listPaymentAccounts(req: Request, res: Response, next: NextFunction) {
+    try {
+      return ok(res, await financeService.listPaymentAccounts((req as AuthedRequest).ctx));
+    } catch (e) {
+      return next(e);
+    }
+  },
+
+  async createPaymentAccount(req: Request, res: Response, next: NextFunction) {
+    try {
+      return ok(res, await financeService.createPaymentAccount((req as AuthedRequest).ctx, req.body ?? {}), undefined, 201);
+    } catch (e) {
+      return next(e);
+    }
+  },
+
+  async getTenantAccountingSettings(req: Request, res: Response, next: NextFunction) {
+    try {
+      return ok(res, await financeService.getTenantAccountingSettings((req as AuthedRequest).ctx));
+    } catch (e) {
+      return next(e);
+    }
+  },
+
+  async updateTenantAccountingSettings(req: Request, res: Response, next: NextFunction) {
+    try {
+      return ok(res, await financeService.updateTenantAccountingSettings((req as AuthedRequest).ctx, req.body ?? {}));
+    } catch (e) {
+      return next(e);
+    }
+  },
+
+  async reconcileExpenses(req: Request, res: Response, next: NextFunction) {
+    try {
+      return ok(res, await financeService.reconcileExpenses((req as AuthedRequest).ctx));
     } catch (e) {
       return next(e);
     }

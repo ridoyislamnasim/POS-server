@@ -21,10 +21,18 @@ model Expense {
   categoryId  String
   category    ExpenseCategory @relation(fields: [categoryId], references: [id])
   status      ExpenseStatus @default(POSTED)
+  // deprecated: amount is legacy alias for totalAmount. Keep for back-compat. New code uses subtotal/taxAmount/totalAmount.
   amount      Decimal       @db.Decimal(19, 4)
   tax         Decimal       @default(0) @db.Decimal(19, 4)
+  subtotal    Decimal?      @db.Decimal(19, 4)
+  taxAmount   Decimal?      @db.Decimal(19, 4)
+  totalAmount Decimal?      @db.Decimal(19, 4)
+  taxRecoverable Boolean?
   method      String        @default("CASH")
+  paymentAccountId String?
+  // relation to PaymentAccount is defined in accounting.prisma (no back-relation required)
   vendor      String?
+  vendorId    String?
   notes       String?
   businessDate DateTime     @db.Date
   createdById String?
@@ -33,6 +41,8 @@ model Expense {
   @@index([tenantId, businessDate])
   @@index([tenantId, branchId, createdAt])
   @@index([tenantId, status, businessDate])
+  @@index([tenantId, paymentAccountId])
+  @@index([tenantId, vendorId])
 }
 
 model Income {

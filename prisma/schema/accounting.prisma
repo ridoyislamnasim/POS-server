@@ -1,0 +1,104 @@
+// Accounting: COA, Journal, Payment Accounts, Tenant accounting settings.
+// Phase 1+3+4+7 — backward-compatible.
+
+model TenantAccountingSettings {
+  tenantId              String  @id
+  defaultTaxRecoverable Boolean @default(false)
+  useLedgerReports      Boolean @default(false) // gate for Phase 6 cutover
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+model ChartAccount {
+  id        String      @id @default(cuid())
+  tenantId  String
+  code      String
+  name      String
+  type      AccountType
+  parentId  String?
+  parent    ChartAccount?  @relation("ChartAccountTree", fields: [parentId], references: [id])
+  children  ChartAccount[] @relation("ChartAccountTree")
+  isActive  Boolean     @default(true)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  journalLines JournalLine[]
+  paymentAccounts PaymentAccount[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, type])
+  @@index([tenantId, parentId])
+}
+
+model PaymentAccount {
+  id          String             @id @default(cuid())
+  tenantId    String
+  branchId    String?
+  name        String
+  type        PaymentAccountType
+  // optional link to COA for Cr account resolution
+  coaAccountId String?
+  coaAccount   ChartAccount? @relation(fields: [coaAccountId], references: [id])
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // no back-relation on Expense to keep finance.prisma decoupled; queried via paymentAccountId
+  @@unique([tenantId, branchId, name])
+  @@index([tenantId, branchId])
+  @@index([tenantId, type])
+}
+
+model JournalEntry {
+  id           String            @id @default(cuid())
+  tenantId     String
+  branchId     String?
+  businessDate DateTime          @db.Date
+  sourceType   JournalSourceType
+  sourceId     String
+  status       JournalStatus     @default(POSTED)
+  // reversal linkage
+  reversesId   String?           @unique
+  reverses     JournalEntry?     @relation("JournalReversal", fields: [reversesId], references: [id])
+  reversedBy   JournalEntry?     @relation("JournalReversal")
+  memo         String?
+  createdById  String?
+  createdAt    DateTime          @default(now())
+
+  lines JournalLine[]
+
+  @@index([tenantId, businessDate])
+  @@index([tenantId, sourceType, sourceId])
+  @@index([tenantId, branchId, businessDate])
+  @@index([tenantId, status])
+}
+
+model JournalLine {
+  id             String   @id @default(cuid())
+  journalEntryId String
+  journalEntry   JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  accountId      String
+  account        ChartAccount @relation(fields: [accountId], references: [id])
+  debit          Decimal  @db.Decimal(19, 4) @default(0)
+  credit         Decimal  @db.Decimal(19, 4) @default(0)
+  memo           String?
+
+  @@index([journalEntryId])
+  @@index([accountId])
+}
+
+model ExpenseAttachment {
+  id         String   @id @default(cuid())
+  tenantId   String
+  expenseId  String
+  // no FK to Expense to avoid cross-file relation cycle; enforced at app layer
+  fileName   String
+  fileUrl    String
+  mimeType   String?
+  sizeBytes  Int?
+  uploadedBy String?
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId, expenseId])
+  @@index([expenseId])
+}

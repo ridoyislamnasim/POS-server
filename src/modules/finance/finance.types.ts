@@ -5,10 +5,16 @@ export type CreateExpenseCategoryInput = {
 
 export type CreateExpenseInput = {
   categoryId: string;
-  amount: string | number;
+  amount?: string | number;
+  subtotal?: string | number;
   tax?: string | number;
+  taxAmount?: string | number;
+  totalAmount?: string | number;
+  taxRecoverable?: boolean;
   method?: string;
+  paymentAccountId?: string;
   vendor?: string;
+  vendorId?: string;
   notes?: string;
   branchId?: string;
   businessDate?: string;

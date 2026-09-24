@@ -404,3 +404,32 @@ enum RequestStatus {
   CANCELLED
   EXPIRED
 }
+
+enum JournalStatus {
+  POSTED
+  REVERSED
+  VOIDED
+}
+
+enum JournalSourceType {
+  EXPENSE
+  EXPENSE_REVERSAL
+  INCOME
+  PAYMENT
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  INCOME
+  EXPENSE
+  TAX
+}
+
+enum PaymentAccountType {
+  CASH
+  BANK
+  MFS
+  CARD
+}
