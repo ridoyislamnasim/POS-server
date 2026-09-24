@@ -10,7 +10,7 @@ import {
 } from "../../shared/money.js";
 import { prisma } from "../../lib/prisma.js";
 import { ForbiddenError, InsufficientStockError, assertBranch, hasPermission, requireTenantId } from "../../lib/scope.js";
-import { applyStockChange } from "../inventory/stock.engine.js";
+import { applyStockChange, lockOrCreateStock } from "../inventory/stock.engine.js";
 import type { RequestContext } from "../../types.js";
 
 type PayLine = { method: string; amount: string; status?: PaymentStatus };
@@ -214,10 +214,25 @@ export async function createSale(input: {
         rate,
         variantSnap,
         item,
-      });
+      } as unknown as { variant: typeof variant; qty: Prisma.Decimal; line: typeof line; rate: typeof rate; variantSnap: string; item: ItemIn; snapshotCost: Prisma.Decimal });
     }
 
-    const subtotal = roundMoney(computed.reduce((s, c) => s.plus(money(c.line.taxable)), money(0)));
+    // Concurrency-safe WAC snapshot: lock Stock row (FOR UPDATE) inside same transaction before SALE deduction.
+    // Do NOT use non-locked findUnique — race would give stale cost when two sales run concurrently.
+    // Stock.unitCost is source; ProductVariant.cost is fallback only when Stock is zero.
+    for (const c of computed as unknown as Array<{ variant: { id: string; cost: Prisma.Decimal }; snapshotCost: Prisma.Decimal }>) {
+      const locked = await lockOrCreateStock(tx, {
+        tenantId,
+        locationId: branch.locationId,
+        variantId: c.variant.id,
+      });
+      const stockCost = locked.unitCost as unknown as Prisma.Decimal;
+      const variantCost = c.variant.cost as unknown as Prisma.Decimal;
+      const hasStockCost = stockCost != null && !new Prisma.Decimal(stockCost).equals(0);
+      c.snapshotCost = hasStockCost ? new Prisma.Decimal(stockCost) : new Prisma.Decimal(variantCost ?? 0);
+    }
+
+    const subtotal = roundMoney(computed.reduce((s, c) => s.plus(money((c as unknown as { line: { taxable: Prisma.Decimal } }).line.taxable)), money(0)));
     const txDiscount = transactionDiscountAmount({
       subtotal,
       flat: input.transactionDiscount ?? 0,
@@ -294,19 +309,21 @@ export async function createSale(input: {
         currencySnapshot: { code: business?.currency ?? "BDT", rate: "1" },
         items: {
           create: computed.map((c) => ({
-            variantId: c.variant.id,
-            qty: c.qty,
-            unitPrice: toMoneyString(c.variant.price),
-            originalPrice: toMoneyString(c.variant.price),
-            discountAmount: toMoneyString(c.line.discount),
-            discountReason: c.item.discountReason,
-            taxRate: toMoneyString(c.rate, 4),
-            taxAmount: toMoneyString(c.line.tax),
-            lineTotal: toMoneyString(c.line.lineTotal),
-            productNameSnapshot: c.variant.product.name,
-            skuSnapshot: c.variant.sku,
-            variantSnapshot: c.variantSnap,
-            associateId: c.item.associateId,
+            variantId: (c as unknown as { variant: { id: string } }).variant.id,
+            qty: (c as unknown as { qty: Prisma.Decimal }).qty,
+            unitPrice: toMoneyString((c as unknown as { variant: { price: Prisma.Decimal } }).variant.price),
+            originalPrice: toMoneyString((c as unknown as { variant: { price: Prisma.Decimal } }).variant.price),
+            discountAmount: toMoneyString((c as unknown as { line: { discount: Prisma.Decimal } }).line.discount),
+            discountReason: (c as unknown as { item: ItemIn }).item.discountReason,
+            taxRate: toMoneyString((c as unknown as { rate: Prisma.Decimal }).rate, 4),
+            taxAmount: toMoneyString((c as unknown as { line: { tax: Prisma.Decimal } }).line.tax),
+            lineTotal: toMoneyString((c as unknown as { line: { lineTotal: Prisma.Decimal } }).line.lineTotal),
+            // Frozen COGS snapshot — locked Stock.unitCost (WAC) at sale time, not ProductVariant.cost.
+            unitCost: toMoneyString((c as unknown as { snapshotCost: Prisma.Decimal }).snapshotCost),
+            productNameSnapshot: (c as unknown as { variant: { product: { name: string } } }).variant.product.name,
+            skuSnapshot: (c as unknown as { variant: { sku: string } }).variant.sku,
+            variantSnapshot: (c as unknown as { variantSnap: string }).variantSnap,
+            associateId: (c as unknown as { item: ItemIn }).item.associateId,
           })),
         },
         payments: {
@@ -351,7 +368,7 @@ export async function createSale(input: {
     if (!sale) throw Object.assign(new Error("Could not allocate invoice number"), { code: "VALIDATION" });
 
     if (status === "COMPLETED") {
-      for (const c of computed) {
+      for (const c of computed as unknown as Array<{ variant: { id: string; product: { trackInventory: boolean; allowNegativeStock: boolean } }; qty: Prisma.Decimal; snapshotCost: Prisma.Decimal }>) {
         if (!c.variant.product.trackInventory) continue;
         const blockNegative =
           branch.negativeStockPolicy === "BLOCK" && !c.variant.product.allowNegativeStock;
@@ -367,6 +384,8 @@ export async function createSale(input: {
           referenceId: sale.id,
           createdById: input.ctx.userId,
           allowNegative: !blockNegative,
+          // Movement value should use frozen WAC snapshot, consistent with SaleItem.unitCost.
+          unitCost: c.snapshotCost,
         });
       }
     }

@@ -55,7 +55,7 @@ export function mapStockTotals(row: {
   };
 }
 
-async function lockOrCreateStock(
+export async function lockOrCreateStock(
   tx: Prisma.TransactionClient,
   input: { tenantId: string; locationId: string; variantId: string },
 ) {
@@ -154,7 +154,12 @@ export async function applyStockChange(
       available: nextBuckets.available,
     });
   }
+  // For SALE deductions: unitCost is authoritative WAC from locked Stock before deduction.
+  // For PURCHASE: input.unitCost is incoming cost; updated.unitCost is new WAC.
   const unitCost = d(input.unitCost ?? updated.unitCost ?? 0);
+  // Snapshot for COGS — WAC at the moment of deduction (locked stock), not current variant cost.
+  // For negative deltas (SALE) this is stock.unitCost before; for positive it's new WAC in `updated`.
+  const snapshotCost = input.type === "SALE" ? d(stock.unitCost ?? 0) : d(updated.unitCost ?? stock.unitCost ?? 0);
   const movement = await tx.stockMovement.create({
     data: {
       tenantId: input.tenantId,
@@ -175,7 +180,7 @@ export async function applyStockChange(
       referenceId: input.referenceId,
     },
   });
-  return { stock: updated, before, after, movement, buckets: nextBuckets };
+  return { stock: updated, before, after, movement, buckets: nextBuckets, snapshotCost, beforeUnitCost: d(stock.unitCost ?? 0) };
 }
 
 export async function moveAvailableToDamaged(

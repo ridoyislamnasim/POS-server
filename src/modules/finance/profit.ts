@@ -7,8 +7,8 @@ import type { RequestContext } from "../../types.js";
  * Unified profit calculation — single source of truth for Dashboard, P&L and Profit Report.
  * - Revenue is VAT-inclusive (Sale.total includes tax, as per sales.service lineTotals).
  * - Reuses existing models only: Sale, SaleItem, SaleReturn, SaleReturnItem, SaleReturnExchange, Expense, Income.
- * - Historical COGS limitation: SaleItem does NOT store cost snapshot, so we use current ProductVariant.cost.
- *   This is documented; a future migration could snapshot cost onto SaleItem at sale time.
+ * - Historical COGS: SaleItem.unitCost is frozen WAC snapshot from locked Stock.unitCost at sale time.
+ *   Legacy rows with null unitCost fall back to current ProductVariant.cost.
  * - Return ≠ Damage ≠ Adjustment: damage/quarantine stock moves are inventory-only, not P&L loss.
  *   Only qualified shrinkage would be P&L, but current StockMovement.reason is free-text with no taxonomy,
  *   so adjustment loss is 0 by design (reported as limitation).
@@ -48,7 +48,7 @@ export async function computeProfit(ctx: RequestContext, from: string, to: strin
     where: { tenantId: tid, ...(scope as object), businessDate: range as never },
   });
 
-  // Cost map — current variant cost (historical limitation noted above)
+  // Cost map — prefer frozen SaleItem.unitCost, fallback to current ProductVariant.cost for legacy rows.
   const variantIds = [
     ...new Set([
       ...sales.flatMap((s) => s.items.map((i) => i.variantId)),
@@ -75,7 +75,9 @@ export async function computeProfit(ctx: RequestContext, from: string, to: strin
   const netRevenue = grossRevenue - returnRevenue + exchangeRevenue;
 
   let grossCogs = 0;
-  for (const s of sales) for (const i of s.items) grossCogs += num(i.qty) * (costMap.get(i.variantId) ?? 0);
+  for (const s of sales)
+    for (const i of s.items as unknown as Array<{ qty: unknown; variantId: string; unitCost?: unknown }>)
+      grossCogs += num(i.qty) * (i.unitCost != null ? num(i.unitCost as string) : (costMap.get(i.variantId) ?? 0));
 
   let cogsReversal = 0;
   for (const r of returns) for (const i of r.items) cogsReversal += num(i.qty) * (costMap.get(i.variantId) ?? 0);

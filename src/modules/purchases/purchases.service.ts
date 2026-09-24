@@ -245,7 +245,7 @@ export const purchasesService = {
         include: { items: true, supplier: true },
       });
       for (const i of computed) {
-        await applyStockChange(tx, {
+        const res = await applyStockChange(tx, {
           tenantId: tid,
           locationId: loc,
           variantId: i.variantId,
@@ -257,6 +257,23 @@ export const purchasesService = {
           createdById: ctx.userId,
           unitCost: i.unitCost,
         });
+        // Sync current variant cost reference FROM authoritative Stock.unitCost (WAC) — variant-isolated, not latest purchase price (§0).
+        // Stock.unitCost is source; ProductVariant.cost is cache for display/fallback.
+        if (res?.stock?.unitCost != null) {
+          await tx.productVariant.update({ where: { id: i.variantId }, data: { cost: res.stock.unitCost } });
+          // Keep Product.purchasePrice in sync for SIMPLE products (header mirrors WAC); VARIABLE header is optional so skip
+          try {
+            const v = await tx.productVariant.findUnique({ where: { id: i.variantId }, select: { productId: true } });
+            if (v?.productId) {
+              const prod = await tx.product.findUnique({ where: { id: v.productId }, select: { type: true } });
+              if (prod && prod.type !== "VARIABLE") {
+                await tx.product.update({ where: { id: v.productId }, data: { purchasePrice: res.stock.unitCost } });
+              }
+            }
+          } catch {
+            // non-blocking — costing sync already done
+          }
+        }
       }
       await linkPurchaseReceipt(tx, {
         tenantId: tid,
@@ -268,16 +285,39 @@ export const purchasesService = {
         items: computed.map((i) => ({ variantId: i.variantId, qty: i.qty, unitCost: i.unitCost })),
         notes,
       });
-      // Optional selling-price updates per variant (inherited vs overridden — only if supplied)
+      // Optional selling-price updates per variant — only if supplied, then recompute price (selling = retail - retail*discount/100)
+      // Costing (Stock.unitCost → variant.cost) is WAC-based above; this block keeps retail/wholesale/discount/price in sync variant-wise.
       for (const raw of mergedItems) {
         const rp = (raw as unknown as { retailPrice?: number }).retailPrice;
         const wp = (raw as unknown as { wholesalePrice?: number }).wholesalePrice;
-        if (rp != null || wp != null) {
-          const data: Record<string, string> = {};
-          if (rp != null && Number.isFinite(Number(rp))) data.retailPrice = String(rp);
+        const disc = (raw as unknown as { discount?: number }).discount;
+        if (rp != null || wp != null || disc != null) {
+          const cur = await tx.productVariant.findUnique({
+            where: { id: raw.variantId },
+            select: { retailPrice: true, discount: true },
+          });
+          const data: Record<string, string | null> = {};
+          let nextRetail: string | null = cur?.retailPrice != null ? String(cur.retailPrice) : null;
+          let nextDisc: string = cur?.discount != null ? String(cur.discount) : "0";
+          if (rp != null && Number.isFinite(Number(rp))) {
+            data.retailPrice = String(rp);
+            nextRetail = String(rp);
+          }
           if (wp != null && Number.isFinite(Number(wp))) data.wholesalePrice = String(wp);
+          if (disc != null && Number.isFinite(Number(disc))) {
+            data.discount = String(disc);
+            nextDisc = String(disc);
+          }
+          // Recompute POS selling price whenever retail or discount changes (variant-isolated)
+          if (rp != null || disc != null) {
+            const retailNum = Number(nextRetail ?? 0);
+            const discNum = Number(nextDisc ?? 0);
+            const selling = retailNum > 0 ? (retailNum - (retailNum * discNum) / 100).toFixed(2) : cur ? String(cur.retailPrice ?? 0) : "0";
+            // Only set price if we have a meaningful retail base; otherwise leave as-is
+            if (retailNum > 0) data.price = selling;
+          }
           if (Object.keys(data).length) {
-            await tx.productVariant.update({ where: { id: raw.variantId }, data });
+            await tx.productVariant.update({ where: { id: raw.variantId }, data: data as never });
           }
         }
       }

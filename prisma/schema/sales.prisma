@@ -65,6 +65,8 @@ model SaleItem {
   taxRate             Decimal @db.Decimal(7, 4)
   taxAmount           Decimal @db.Decimal(19, 4)
   lineTotal           Decimal @db.Decimal(19, 4)
+  // Historical COGS snapshot — Stock.unitCost (WAC) at sale time, frozen. See plan §3.
+  unitCost            Decimal? @db.Decimal(19, 4)
   productNameSnapshot String
   skuSnapshot         String
   variantSnapshot     String

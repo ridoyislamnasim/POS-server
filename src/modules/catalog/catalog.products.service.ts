@@ -425,6 +425,8 @@ export const catalogProductsService = {
           ...(simple.price != null ? { price: String(simple.price) } : {}),
           ...(simple.cost != null ? { cost: String(simple.cost) } : {}),
           ...(simple.discount != null ? { discount: String(simple.discount) } : {}),
+          ...(simple.wholesalePrice != null ? { wholesalePrice: simple.wholesalePrice === "" ? null : String(simple.wholesalePrice) } : {}),
+          ...(simple.retailPrice != null ? { retailPrice: simple.retailPrice === "" ? null : String(simple.retailPrice) } : {}),
           ...(simple.minStock != null ? { minStock: String(simple.minStock) } : {}),
           ...(simple.status ? { status: simple.status as "ACTIVE" | "INACTIVE" } : {}),
         });

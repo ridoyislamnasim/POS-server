@@ -200,14 +200,28 @@ export const financeRepository = {
       if (input.partyType === "SUPPLIER" && input.direction === "OUT") {
         const supplier = await tx.supplier.findFirst({ where: { id: input.partyId, tenantId: tid } });
         if (!supplier) throw Object.assign(new Error("Supplier not found"), { code: "NOT_FOUND" });
-        const nextDue = Prisma.Decimal.max(new Prisma.Decimal(supplier.creditDue).minus(amt), 0);
+        if (input.purchaseId) {
+          const p = await tx.purchase.findFirst({ where: { id: input.purchaseId, tenantId: tid } });
+          if (!p) throw Object.assign(new Error("Purchase not found"), { code: "NOT_FOUND" });
+          if (String(p.supplierId) !== String(input.partyId)) {
+            throw Object.assign(new Error("Purchase does not belong to this supplier"), { code: "VALIDATION" });
+          }
+        }
+        // Advance allowed: creditDue may go negative (prepayment). Do NOT clamp to 0.
+        const nextDue = new Prisma.Decimal(supplier.creditDue).minus(amt);
         await tx.supplier.update({ where: { id: supplier.id }, data: { creditDue: nextDue } });
         if (input.purchaseId) {
           const p = await tx.purchase.findFirst({ where: { id: input.purchaseId, tenantId: tid } });
           if (p) {
-            const paid = new Prisma.Decimal(p.paid).plus(amt);
-            const due = Prisma.Decimal.max(new Prisma.Decimal(p.total).minus(paid), 0);
-            await tx.purchase.update({ where: { id: p.id }, data: { paid, due } });
+            // Cap applied amount to outstanding due; excess stays as advance via supplier negative above
+            const apply = Prisma.Decimal.min(amt, new Prisma.Decimal(p.due));
+            const paid = new Prisma.Decimal(p.paid).plus(apply);
+            const due = Prisma.Decimal.max(new Prisma.Decimal(p.due).minus(apply), 0);
+            // Keep p.total invariant: paid + due = total (if we capped, due correct; if we want total check use total)
+            // Safer: recompute due from total as fallback if data drift
+            const dueFromTotal = Prisma.Decimal.max(new Prisma.Decimal(p.total).minus(paid), 0);
+            const finalDue = due.lessThan(dueFromTotal) ? due : dueFromTotal;
+            await tx.purchase.update({ where: { id: p.id }, data: { paid, due: finalDue } });
           }
         }
       }
